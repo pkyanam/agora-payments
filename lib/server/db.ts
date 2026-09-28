@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY,type TEXT NOT NULL,actor T
 CREATE TABLE IF NOT EXISTS journal(id TEXT PRIMARY KEY,reference_id TEXT NOT NULL,account TEXT NOT NULL,amount INTEGER NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS idempotency(actor TEXT NOT NULL,route TEXT NOT NULL,key TEXT NOT NULL,hash TEXT NOT NULL,response TEXT NOT NULL,PRIMARY KEY(actor,route,key));
 CREATE TABLE IF NOT EXISTS owner_mfa(id TEXT PRIMARY KEY CHECK(id='owner'),encrypted_secret TEXT NOT NULL,confirmed INTEGER NOT NULL DEFAULT 0,last_counter INTEGER NOT NULL DEFAULT -1,recovery_hashes TEXT NOT NULL DEFAULT '[]',updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS owner_password(id TEXT PRIMARY KEY CHECK(id='owner'),email TEXT,salt TEXT NOT NULL,password_hash TEXT NOT NULL,session_version INTEGER NOT NULL DEFAULT 1,must_change INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS owner_setup(id TEXT PRIMARY KEY CHECK(id='owner'),token_hash TEXT NOT NULL,expires_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS auth_rate_limits(bucket TEXT PRIMARY KEY,attempts INTEGER NOT NULL,window_started INTEGER NOT NULL,locked_until INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS registrations(id TEXT PRIMARY KEY,business_name TEXT NOT NULL,owner_name TEXT NOT NULL,email TEXT NOT NULL,provider TEXT NOT NULL DEFAULT 'stripe',provider_account_id TEXT,status TEXT NOT NULL DEFAULT 'pending',tenant_id TEXT,created_at TEXT NOT NULL,reviewed_at TEXT,review_reason TEXT);
 CREATE TABLE IF NOT EXISTS tenants(id TEXT PRIMARY KEY,business_name TEXT NOT NULL,email TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',provider TEXT NOT NULL DEFAULT 'stripe',provider_account_id TEXT,created_at TEXT NOT NULL,approved_at TEXT);
@@ -87,6 +89,7 @@ function scheduleWebhookAlarm(){
   webhookTimer=setInterval(()=>{void dispatchWebhookBatch(localStore,process.env,createNodeWebhookFetch(process.env)).catch(()=>{});},5000);
   webhookTimer.unref?.();
 }
+const initialSetupHash=process.env.AGORA_OWNER_SETUP_TOKEN_HASH;if(!one("SELECT id FROM owner_password WHERE id='owner'")&&initialSetupHash&&/^[a-f0-9]{64}$/.test(initialSetupHash))run("INSERT OR IGNORE INTO owner_setup(id,token_hash,expires_at) VALUES('owner',?,?)",initialSetupHash,new Date(Date.now()+7*24*60*60*1000).toISOString());
 export const localStore:LedgerStore={one:<T>(sql:string,...args:SqlValue[])=>one<T>(sql,...args as SQLInputValue[]),all:<T>(sql:string,...args:SqlValue[])=>all<T>(sql,...args as SQLInputValue[]),run:(sql:string,...args:SqlValue[])=>run(sql,...args as SQLInputValue[]),transaction,id,now,event,journal,scheduleWebhookAlarm};
 scheduleWebhookAlarm();
 if (!one('SELECT id FROM products LIMIT 1') && (process.env.AGORA_SEED === 'true' || (process.env.NODE_ENV !== 'production' && process.env.AGORA_SEED !== 'false'))) transaction(()=>{

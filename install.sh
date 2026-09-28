@@ -40,10 +40,10 @@ Usage: bash install.sh [options]
   --target boat               Install into a Boat sandbox using its stable HTTPS host
   --dir ABSOLUTE_PATH         Installation directory (default: ~/.local/share/agora)
   --url ORIGIN                 Public origin (default: http://localhost:3000)
-  --owner-email EMAIL          First owner login email
+  --owner-email EMAIL          Legacy owner email (optional)
   --port PORT                  Local port (default: 3000)
   --host ADDRESS               Bind address (default: 127.0.0.1)
-  --non-interactive            Disable prompts; requires --owner-email
+  --non-interactive            Disable prompts
   --update                     Update an existing installation
   --help                       Show this help
 
@@ -98,15 +98,9 @@ if [[ "$ORIGIN" == http://localhost:* || "$ORIGIN" == http://127.0.0.1:* || "$OR
   if ((PORT_SET)); then [[ "$PORT" == "$ORIGIN_PORT" ]] || { printf 'Loopback URL port %s must match --port %s.\n' "$ORIGIN_PORT" "$PORT" >&2; exit 2; }
   else PORT="$ORIGIN_PORT"; fi
 fi
-if [[ -z "$OWNER_EMAIL" ]] && ((NON_INTERACTIVE == 0)) && has_interactive_tty; then
-  printf 'Owner email: ' > /dev/tty
-  IFS= read -r OWNER_EMAIL < /dev/tty || OWNER_EMAIL=
+if [[ -n "$OWNER_EMAIL" ]]; then
+  [[ "$OWNER_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || { printf '%s\n' 'Enter a valid owner email.' >&2; exit 2; }
 fi
-if [[ -z "$OWNER_EMAIL" ]]; then
-  if ((NON_INTERACTIVE)); then printf '%s\n' '--owner-email is required with --non-interactive.' >&2; else printf '%s\n' 'Owner email is required when stdin is not a terminal.' >&2; fi
-  exit 2
-fi
-[[ "$OWNER_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || { printf '%s\n' 'Enter a valid owner email.' >&2; exit 2; }
 
 command -v node >/dev/null 2>&1 || { printf '%s\n' 'Install Node.js 22.16 or newer, then rerun.' >&2; exit 1; }
 node -e 'const [a,b,c]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&(b>16||(b===16&&c>=0)))?0:1)' || { printf 'Agora local requires Node.js 22.16+ for SQLite backup support; found %s.\n' "$(node --version)" >&2; exit 1; }
@@ -204,24 +198,25 @@ ENV_FILE="$APP_DIR/state/.env.local"
 SECRETS_FILE="$APP_DIR/state/community-owner-credentials.txt"
 if [[ ! -f "$ENV_FILE" ]]; then
   node --input-type=module - "$ENV_FILE" "$SECRETS_FILE" "$APP_DIR/state/data/agora.sqlite" "$ORIGIN" "$OWNER_EMAIL" "$SHORT_COMMIT" <<'NODE'
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { chmod, writeFile } from 'node:fs/promises';
 const [envPath, secretsPath, dbPath, origin, email, version] = process.argv.slice(2);
-const password = randomBytes(24).toString('base64url');
+const setupToken = randomBytes(32).toString('base64url');
+const setupTokenHash = createHash('sha256').update(setupToken).digest('hex');
 const adminToken = randomBytes(32).toString('base64url');
 const encryptionKey = randomBytes(32).toString('base64');
 const q = (s) => JSON.stringify(s);
 const rows = [
   'NODE_ENV=production', 'AGORA_DEPLOYMENT_TYPE=community', 'AGORA_DEPLOYMENT_TARGET=node', 'AGORA_DEPLOYMENT_ENV=community',
   'AGORA_PAYMENT_PROVIDER=stripe', 'AGORA_STRIPE_MODE=test', `AGORA_VERSION=${q(version)}`,
-  `AGORA_PUBLIC_ORIGIN=${q(origin)}`, `AGORA_OWNER_EMAIL=${q(email)}`, `AGORA_ADMIN_PASSWORD=${q(password)}`,
+  `AGORA_PUBLIC_ORIGIN=${q(origin)}`, `AGORA_OWNER_SETUP_TOKEN_HASH=${q(setupTokenHash)}`, ...(email ? [`AGORA_OWNER_EMAIL=${q(email)}`] : []),
   `AGORA_ADMIN_TOKEN=${q(adminToken)}`, `AGORA_MFA_ENCRYPTION_KEY=${q(encryptionKey)}`,
   `AGORA_SECRETS_ENCRYPTION_KEY=${q(encryptionKey)}`, `AGORA_DATABASE_PATH=${q(dbPath)}`,
   'AGORA_SEED=false',
 ].join('\n') + '\n';
 await writeFile(envPath, rows, { mode: 0o600, flag: 'wx' });
 await chmod(envPath, 0o600);
-await writeFile(secretsPath, `Agora Community owner bootstrap\nEmail: ${email}\nPassword: ${password}\n\nKeep this file private. Change the password after sign-in, then remove this file.\n`, { mode: 0o600, flag: 'wx' });
+await writeFile(secretsPath, `Agora Community one-time owner setup\nOpen: ${origin}/#setup=${setupToken}\nChoose your owner email and password, then enroll MFA.\n\nKeep this file private and remove it after setup.\n`, { mode: 0o600, flag: 'wx' });
 await chmod(secretsPath, 0o600);
 NODE
 else
@@ -301,7 +296,7 @@ cat <<RESULT
 Agora Community is installed at: $APP_DIR
 Release: $SHORT_COMMIT
 SQLite data and private configuration stay in this installation across upgrades.
-Owner bootstrap credentials are in: $SECRETS_FILE
+One-time owner setup link (private): $SECRETS_FILE
 Payments start in Stripe test mode. Configure test credentials and verify a signed test webhook before issuing API keys.
 Start the app with: "$APP_DIR/start.sh"
 Open: $ORIGIN

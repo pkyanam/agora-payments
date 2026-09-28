@@ -227,7 +227,6 @@ if [[ -f "$APP_DIR/install.json" ]]; then
 fi
 
 [[ "$UPDATE" != 1 ]] || fail 'No existing Boat Agora installation was found; refusing --update.'
-[[ -n "$OWNER_EMAIL" ]] || fail 'Owner email is required for the first Boat installation.'
 [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail 'The local installer did not provide a pinned source revision.'
 [[ ! -e "$APP_DIR" || ! -d "$APP_DIR" ]] || [[ -z "$(find "$APP_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]] || fail "Installation path $APP_DIR is not empty; refusing to overwrite it."
 
@@ -260,7 +259,8 @@ git -C "$SOURCE_DIR" fetch --depth=1 origin "$SOURCE_COMMIT" >/dev/null 2>&1 || 
 git -C "$SOURCE_DIR" checkout --detach FETCH_HEAD >/dev/null 2>&1 || fail 'Could not select the pinned installer revision.'
 [[ "$(git -C "$SOURCE_DIR" rev-parse HEAD)" == "$SOURCE_COMMIT" ]] || fail 'Remote installer source did not match the local installer revision.'
 printf 'Installing pinned Agora source %s into %s...\n' "${SOURCE_COMMIT:0:12}" "$APP_DIR"
-bash "$SOURCE_DIR/install.sh" --target local --non-interactive --owner-email "$OWNER_EMAIL" --dir "$APP_DIR" --url "$PUBLIC_ORIGIN" --port "$PORT" --host 0.0.0.0 || fail 'Agora installation failed. The sandbox and its private route were left intact for recovery.'
+if [[ -n "$OWNER_EMAIL" ]]; then OWNER_ARGS=(--owner-email "$OWNER_EMAIL"); else OWNER_ARGS=(); fi
+bash "$SOURCE_DIR/install.sh" --target local --non-interactive "${OWNER_ARGS[@]}" --dir "$APP_DIR" --url "$PUBLIC_ORIGIN" --port "$PORT" --host 0.0.0.0 || fail 'Agora installation failed. The sandbox and its private route were left intact for recovery.'
 
 write_service "$(id -un)"
 "${SUDO[@]}" systemctl start "$SERVICE"

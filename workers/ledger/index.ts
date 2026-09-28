@@ -16,11 +16,12 @@ interface Env {
   AGORA_VERSION?: string;
   AGORA_SECRETS_ENCRYPTION_KEY?: string;
   AGORA_PUBLIC_ORIGIN: string;
-  AGORA_OWNER_EMAIL: string;
+  AGORA_OWNER_EMAIL?: string;
   AGORA_WORKSPACE_NAME?: string;
   AGORA_PAYMENT_PROVIDER?: string;
   AGORA_STRIPE_MODE?: string;
-  AGORA_ADMIN_PASSWORD: string;
+  AGORA_ADMIN_PASSWORD?: string;
+  AGORA_OWNER_SETUP_TOKEN_HASH?: string;
   AGORA_ADMIN_TOKEN: string;
   AGORA_MFA_ENCRYPTION_KEY: string;
   STRIPE_TEST_SECRET_KEY?: string;
@@ -42,6 +43,8 @@ CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY,type TEXT NOT NULL,actor T
 CREATE TABLE IF NOT EXISTS journal(id TEXT PRIMARY KEY,reference_id TEXT NOT NULL,account TEXT NOT NULL,amount INTEGER NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS idempotency(actor TEXT NOT NULL,route TEXT NOT NULL,key TEXT NOT NULL,hash TEXT NOT NULL,response TEXT NOT NULL,PRIMARY KEY(actor,route,key));
 CREATE TABLE IF NOT EXISTS owner_mfa(id TEXT PRIMARY KEY CHECK(id='owner'),encrypted_secret TEXT NOT NULL,confirmed INTEGER NOT NULL DEFAULT 0,last_counter INTEGER NOT NULL DEFAULT -1,recovery_hashes TEXT NOT NULL DEFAULT '[]',updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS owner_password(id TEXT PRIMARY KEY CHECK(id='owner'),email TEXT,salt TEXT NOT NULL,password_hash TEXT NOT NULL,session_version INTEGER NOT NULL DEFAULT 1,must_change INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS owner_setup(id TEXT PRIMARY KEY CHECK(id='owner'),token_hash TEXT NOT NULL,expires_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS auth_rate_limits(bucket TEXT PRIMARY KEY,attempts INTEGER NOT NULL,window_started INTEGER NOT NULL,locked_until INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS registration_rate_limits(bucket TEXT PRIMARY KEY,attempts INTEGER NOT NULL,window_started INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS registrations(id TEXT PRIMARY KEY,business_name TEXT NOT NULL,owner_name TEXT NOT NULL,email TEXT NOT NULL,provider TEXT NOT NULL DEFAULT 'stripe',provider_account_id TEXT,status TEXT NOT NULL DEFAULT 'pending',tenant_id TEXT,created_at TEXT NOT NULL,reviewed_at TEXT,review_reason TEXT);
@@ -119,6 +122,7 @@ export class AgoraLedgerDO extends DurableObject<Env> {
     this.store = makeStore(ctx.storage,()=>ctx.waitUntil(ctx.storage.setAlarm(Date.now()+1000)));
     this.service = createService(this.store, env);
     ctx.storage.sql.exec(schema);
+    const initialSetupHash=this.env.AGORA_OWNER_SETUP_TOKEN_HASH;if(!this.store.one("SELECT id FROM owner_password WHERE id='owner'")&&initialSetupHash&&/^[a-f0-9]{64}$/.test(initialSetupHash))this.store.run("INSERT OR IGNORE INTO owner_setup(id,token_hash,expires_at) VALUES('owner',?,?)",initialSetupHash,new Date(Date.now()+7*24*60*60*1000).toISOString());
     for (const [table, column, definition] of [
       ['products', 'tenant_id', "TEXT NOT NULL DEFAULT 'owner'"],
       ['products', 'archived_at', 'TEXT'],
@@ -146,7 +150,7 @@ export class AgoraLedgerDO extends DurableObject<Env> {
     }
     ctx.storage.sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS tenant_email_unique ON tenants(email COLLATE NOCASE)");
     ctx.storage.sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS merchant_user_email_unique ON merchant_users(email COLLATE NOCASE)");
-    ctx.storage.sql.exec("INSERT OR IGNORE INTO tenants(id,business_name,email,status,provider,created_at,approved_at) VALUES('owner',?,?,'approved','stripe',?,?)", this.env.AGORA_WORKSPACE_NAME||'Agora workspace',this.env.AGORA_OWNER_EMAIL,this.store.now(),this.store.now());
+    ctx.storage.sql.exec("INSERT OR IGNORE INTO tenants(id,business_name,email,status,provider,created_at,approved_at) VALUES('owner',?,?,'approved','stripe',?,?)", this.env.AGORA_WORKSPACE_NAME||'Agora workspace',this.env.AGORA_OWNER_EMAIL||'owner@localhost',this.store.now(),this.store.now());
     const mfaMigration = this.service.migrateMfaEncryptionKeys();
     console.info('Agora MFA key migration', {
       migrated: mfaMigration.migrated,
@@ -197,9 +201,11 @@ export class AgoraLedgerDO extends DurableObject<Env> {
         return json({ok:true,mode,account_id:account.account_id,webhook:{configured:configured.webhook_secret,verified:configured.webhook_verified},message:configured.webhook_verified?'Stripe credentials and webhook delivery are verified.':'Stripe credentials work. Send a signed account.updated test event to verify webhook delivery.'},200,{'X-Request-Id':requestId});
       }
       if (path === '/api/auth/session' && method === 'GET') return json(this.service.authSession(request), 200, { 'X-Request-Id': requestId });
+      if (path === '/api/auth/setup/claim' && method === 'POST') { const result=this.service.claimOwnerSetup(request,await bodyOf(request)); const {cookie,...payload}=result; const response=json(payload,200,{'Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Request-Id':requestId}); return setMfaCookie(response,request,'pending',cookie); }
+      if (path === '/api/auth/password/change' && method === 'POST') return json(this.service.changeAdminPassword(request, await bodyOf(request)), 200, { 'Cache-Control': 'no-store', 'X-Request-Id': requestId });
       if (path === '/api/auth/login' && method === 'POST') {
         const body = await bodyOf(request);
-        if (body && typeof body === 'object' && typeof (body as { email?: unknown }).email === 'string' && String((body as { email: string }).email).trim().toLowerCase() !== this.env.AGORA_OWNER_EMAIL.trim().toLowerCase()) {
+        if (body && typeof body === 'object' && typeof (body as { email?: unknown }).email === 'string' && String((body as { email: string }).email).trim().toLowerCase() !== this.service.ownerLoginEmail().trim().toLowerCase()) {
           const { cookie, ...payload } = await this.service.merchantLogin(request, body);
           const response = json({ role: 'merchant', ...payload }, 200, { 'X-Request-Id': requestId, 'Referrer-Policy': 'no-referrer' });
           return this.service.setMerchantCookie(response, request, 'pending', cookie);

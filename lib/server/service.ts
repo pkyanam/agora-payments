@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { LedgerStore } from './store';
 import { ApiError } from './errors';
 import { stripeApiKeyMatchesMode, verifyStripeWebhook, type StripeCheckout, type StripeCheckoutStatus, type StripeEvent } from './stripe';
-import { authSession, beginAdminLogin, enrollAdminMfa, isAdminSession, pendingMfaStage, revokeAdminSession, setMfaCookie, verifyAdminMfa } from './admin-auth';
+import { authSession, beginAdminLogin, changeAdminPassword, claimOwnerSetup, enrollAdminMfa, isAdminSession, ownerLoginEmail, pendingMfaStage, revokeAdminSession, setMfaCookie, verifyAdminMfa } from './admin-auth';
 import type { Payment, Product, Credential, Approval, Event, Snapshot, Registration, PaymentActivityDay } from '../types';
 import { acceptMerchantInvite, clearMerchantCookie, createMerchantInvite, enrollMerchantMfa, merchantActor, merchantAuthSession, merchantLogin, revokeMerchantSessions, setMerchantCookie, verifyMerchantMfa } from './merchant-auth';
 import { migrateMfaSecrets } from './mfa-crypto';
@@ -219,6 +219,9 @@ export function createService(store:LedgerStore,environment:PaymentProviderEnvir
  requirePaymentMode:(actor:Actor,paymentId:string)=>requirePaymentMode(store,actor,paymentId),
  logout:(request:Request)=>{revokeAdminSession(store,request);revokeMerchantSessions(store,request);},
  beginAdminLogin:(request:Request,body:unknown)=>beginAdminLogin(store,request,body),
+ claimOwnerSetup:(request:Request,body:unknown)=>claimOwnerSetup(store,request,body),
+ ownerLoginEmail:()=>ownerLoginEmail(store),
+ changeAdminPassword:(request:Request,body:unknown)=>changeAdminPassword(store,request,body),
  enrollAdminMfa:(request:Request,body:unknown)=>enrollAdminMfa(store,request,body),
  verifyAdminMfa:(request:Request,body:unknown)=>verifyAdminMfa(store,request,body),
  authSession:(request:Request)=>{const member=merchantAuthSession(store,request);return member||authSession(store,request);},

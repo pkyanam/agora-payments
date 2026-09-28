@@ -72,6 +72,7 @@ import { StripeSetup } from "@/components/stripe-setup"
 import { InstallationPanel } from "@/components/installation-panel"
 import { OutgoingWebhooks } from "@/components/outgoing-webhooks"
 import { RiskSignals } from "@/components/risk-signals"
+import { PasswordChangeForm } from "@/components/password-change-form"
 const money = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
     n / 100
@@ -171,13 +172,19 @@ export default function Console() {
   const [activityError, setActivityError] = useState("")
   const [error, setError] = useState("")
   const [authState, setAuthState] = useState<
-    "checking" | "signed-out" | "enroll" | "verify" | "recovery" | "pending" | "signed-in"
+    "checking" | "setup" | "signed-out" | "enroll" | "verify" | "recovery" | "pending" | "signed-in"
   >("checking")
   const [authPassword, setAuthPassword] = useState("")
   const [authEmail, setAuthEmail] = useState("")
+  const [setupToken, setSetupToken] = useState("")
+  const [setupTokenFromFragment, setSetupTokenFromFragment] = useState(false)
+  const [setupPassword, setSetupPassword] = useState("")
+  const [setupPasswordConfirm, setSetupPasswordConfirm] = useState("")
   const [authRole, setAuthRole] = useState<"owner" | "merchant">("owner")
+  const [passwordChangeRequired, setPasswordChangeRequired] = useState(false)
   const [authTenantId, setAuthTenantId] = useState("")
   const [authError, setAuthError] = useState("")
+  const [authNotice, setAuthNotice] = useState("")
   const [authErrorDetails, setAuthErrorDetails] = useState<ApiDiagnostic | null>(null)
   const [authBusy, setAuthBusy] = useState(false)
   const [mfaSecret, setMfaSecret] = useState("")
@@ -283,13 +290,19 @@ export default function Console() {
     if (recoveryPending.current) return
     try {
       const response = await fetch("/api/auth/session", { cache: "no-store" })
-      const body = await response.json() as ApiResponse & { role?: string; tenant_id?: string; access_status?: string; mfa_stage?: string; authenticated?: boolean }
+      const body = await response.json() as ApiResponse & { role?: string; tenant_id?: string; access_status?: string; mfa_stage?: string; authenticated?: boolean; password_change_required?: boolean; owner_setup_required?: boolean }
       if (!response.ok)
         throw new Error(
           body.error?.message || "Unable to verify account access."
         )
       setAuthRole(body.role === "merchant" ? "merchant" : "owner")
+      setPasswordChangeRequired(body.password_change_required === true)
       setAuthTenantId(typeof body.tenant_id === "string" ? body.tenant_id : "")
+      if (body.owner_setup_required) {
+        setData(null)
+        setAuthState("setup")
+        return
+      }
       if (body.access_status === "pending") {
         setData(null)
         setAuthState("pending")
@@ -365,6 +378,15 @@ export default function Console() {
     return () => controller.abort()
   }, [])
   useEffect(() => {
+    const fragment = new URLSearchParams(window.location.hash.slice(1))
+    const token = fragment.get("setup")
+    if (token) {
+      setSetupToken(token)
+      setSetupTokenFromFragment(true)
+      history.replaceState(history.state, "", `${location.pathname}${location.search}`)
+    }
+  }, [])
+  useEffect(() => {
     checkSession()
     const onFocus = () => checkSession()
     window.addEventListener("focus", onFocus)
@@ -411,6 +433,7 @@ export default function Console() {
     event.preventDefault()
     setAuthBusy(true)
     setAuthError("")
+    setAuthNotice("")
     setAuthErrorDetails(null)
     try {
       const response = await fetch("/api/auth/login", {
@@ -440,6 +463,55 @@ export default function Console() {
       }
     } catch (reason) {
       setAuthError(reason instanceof Error ? reason.message : "Sign-in failed.")
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+  async function claimOwnerSetup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setAuthBusy(true)
+    setAuthError("")
+    setAuthErrorDetails(null)
+    if (setupPassword !== setupPasswordConfirm) {
+      setAuthError("The passwords do not match.")
+      setAuthBusy(false)
+      return
+    }
+    if (setupPassword.length < 12) {
+      setAuthError("Choose a password with at least 12 characters.")
+      setAuthBusy(false)
+      return
+    }
+    if (!setupToken) {
+      setAuthError("Open the one-time setup link from your installer, then try again.")
+      setAuthBusy(false)
+      return
+    }
+    try {
+      const response = await fetch("/api/auth/setup/claim", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: setupToken, email: authEmail.trim(), password: setupPassword }),
+      })
+      const body = await response.json() as ApiResponse & { stage?: string; email?: string; secret?: string; otpauth_url?: string }
+      if (!response.ok) {
+        setApiAuthError(response, body, "Owner setup could not be completed.")
+        return
+      }
+      if (body.stage !== "enroll" || !body.secret || !body.otpauth_url) {
+        throw new Error("Setup response did not include the authenticator step. Contact your installer administrator.")
+      }
+      setSetupToken("")
+      setSetupPassword("")
+      setSetupPasswordConfirm("")
+      setAuthEmail(typeof body.email === "string" ? body.email : authEmail.trim())
+      setAuthRole("owner")
+      setAuthTenantId("")
+      setMfaSecret(body.secret)
+      setMfaUri(body.otpauth_url)
+      setAuthState("enroll")
+    } catch (reason) {
+      setAuthError(reason instanceof Error ? reason.message : "Owner setup could not be completed.")
     } finally {
       setAuthBusy(false)
     }
@@ -484,8 +556,7 @@ export default function Console() {
         setRecoveryCodes(codes)
         setAuthState("recovery")
       } else {
-        setAuthState("signed-in")
-        await load()
+        await checkSession()
       }
     } catch (reason) {
       setAuthError(reason instanceof Error ? reason.message : "Code was not accepted.")
@@ -496,8 +567,14 @@ export default function Console() {
   function finishRecoverySetup() {
     recoveryPending.current = false
     setRecoveryCodes([])
-    setAuthState("signed-in")
-    void load()
+    void checkSession()
+  }
+  function finishPasswordChange() {
+    setPasswordChangeRequired(false)
+    setData(null)
+    setAuthError("")
+    setAuthNotice("Password updated. Sign in with your new password to continue.")
+    setAuthState("signed-out")
   }
   async function logout() {
     setAuthBusy(true)
@@ -935,6 +1012,40 @@ export default function Console() {
       </main>
     )
   }
+  if (authState === "setup") {
+    return (
+      <main className="auth-page">
+        <section className="auth-card" aria-labelledby="owner-setup-title">
+          <Link className="wordmark" href="/" aria-label="Agora home">agora<span>·</span></Link>
+          <h1 id="owner-setup-title">Set up your Agora workspace</h1>
+          <p>Create the owner account for this installation, then secure it with an authenticator app.</p>
+          {!setupToken && <p role="status">Open the one-time setup link printed by the installer. Its token is only accepted once.</p>}
+          <form className="form-stack" onSubmit={claimOwnerSetup}>
+            <div className="field">
+              <Label htmlFor="setup-email">Owner email</Label>
+              <Input id="setup-email" name="email" type="email" autoComplete="username" autoCapitalize="none" spellCheck={false} maxLength={254} value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} aria-invalid={authError ? true : undefined} aria-describedby={authError ? "auth-error" : undefined} required autoFocus disabled={authBusy} />
+            </div>
+            {!setupTokenFromFragment && <div className="field">
+              <Label htmlFor="setup-token">One-time setup token</Label>
+              <Input id="setup-token" name="setup_token" type="password" autoComplete="off" maxLength={256} value={setupToken} onChange={(event) => setSetupToken(event.target.value.trim())} aria-invalid={authError ? true : undefined} aria-describedby={authError ? "auth-error" : "setup-token-help"} required disabled={authBusy} />
+              <small id="setup-token-help">Paste the token from the private setup link printed by the installer.</small>
+            </div>}
+            <div className="field">
+              <Label htmlFor="setup-password">Password</Label>
+              <Input id="setup-password" name="password" type="password" autoComplete="new-password" minLength={12} maxLength={256} value={setupPassword} onChange={(event) => setSetupPassword(event.target.value)} aria-invalid={authError ? true : undefined} aria-describedby={authError ? "auth-error" : "setup-password-requirements"} required disabled={authBusy} />
+            </div>
+            <div className="field">
+              <Label htmlFor="setup-password-confirm">Confirm password</Label>
+              <Input id="setup-password-confirm" name="password_confirmation" type="password" autoComplete="new-password" minLength={12} maxLength={256} value={setupPasswordConfirm} onChange={(event) => setSetupPasswordConfirm(event.target.value)} aria-invalid={authError ? true : undefined} aria-describedby={authError ? "auth-error" : "setup-password-requirements"} required disabled={authBusy} />
+              <small id="setup-password-requirements">Use at least 12 characters. You will set up MFA next.</small>
+            </div>
+            {renderAuthError()}
+            <Button type="submit" disabled={authBusy || !setupToken || !authEmail.trim() || !setupPassword || !setupPasswordConfirm}>{authBusy ? "Creating owner account…" : "Create owner account"}</Button>
+          </form>
+        </section>
+      </main>
+    )
+  }
   if (authState === "pending") {
     return (
       <main className="auth-page">
@@ -1040,6 +1151,7 @@ export default function Console() {
           </Link>
           <h1 id="auth-title">Sign in</h1>
           <p>Sign in to your Agora account.</p>
+          {authNotice && <p role="status">{authNotice}</p>}
           <p className="auth-account">{deploymentType === "community" ? "Workspace owner account" : deploymentType === "hosted" ? "Owner and merchant accounts" : "Account access"}</p>
           <form className="form-stack" onSubmit={login}>
             <div className="field">
@@ -1079,6 +1191,19 @@ export default function Console() {
           </form>
           {deploymentType === "hosted" && <p className="auth-register">New merchant? <a className="inline-link" href="/register">Request access</a></p>}
           <p className="support-note">Support: <a className="inline-link" href="mailto:info@belweave.com">info@belweave.com</a></p>
+        </section>
+      </main>
+    )
+  }
+  if (authState === "signed-in" && authRole === "owner" && passwordChangeRequired) {
+    return (
+      <main className="auth-page">
+        <section className="auth-card" aria-labelledby="password-change-title">
+          <Link className="wordmark" href="/" aria-label="Agora home">agora<span>·</span></Link>
+          <h1 id="password-change-title">Choose your password</h1>
+          <p>Your temporary bootstrap password got you started. Set a private password to continue into Agora.</p>
+          <PasswordChangeForm required onChanged={finishPasswordChange} />
+          <Button variant="ghost" onClick={logout} disabled={authBusy}>Sign out</Button>
         </section>
       </main>
     )
@@ -1160,8 +1285,15 @@ export default function Console() {
               )}
               {view === "Settings" && (
                 <>
-                  <section className="page-heading"><div><h1>Settings</h1><p>Connect the Stripe account for this Agora deployment.</p></div></section>
-                  {authRole === "owner" ? <><StripeSetup onChange={() => void load()} /><InstallationPanel version={data.current_version} target={data.deployment_target} /></> : <p role="status">Only the workspace owner can change workspace settings.</p>}
+                  <section className="page-heading"><div><h1>Settings</h1><p>Manage account security and connect Stripe for this Agora deployment.</p></div></section>
+                  {authRole === "owner" ? <>
+                    <section className="settings-panel" aria-labelledby="security-settings-title">
+                      <div><h2 id="security-settings-title">Security</h2><p>Change the password used with your authenticator to sign in.</p></div>
+                      <PasswordChangeForm onChanged={finishPasswordChange} />
+                    </section>
+                    <StripeSetup onChange={() => void load()} />
+                    <InstallationPanel version={data.current_version} target={data.deployment_target} />
+                  </> : <p role="status">Only the workspace owner can change workspace settings.</p>}
                 </>
               )}
               {view === "Overview" && (

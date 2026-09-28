@@ -472,6 +472,35 @@ h2 {
   gap: 9px;
   padding: 0 18px;
 }
+.settings-panel {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(280px, 2fr);
+  gap: 24px;
+  max-width: 760px;
+  margin: 0 0 40px;
+  padding: 24px;
+  border: 1px solid #e5e5e5;
+  border-radius: 10px;
+  background: #fff;
+}
+.settings-panel h2 {
+  margin: 0 0 8px;
+}
+.settings-panel > div > p {
+  margin: 0;
+  color: #555;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.settings-panel .form-stack {
+  min-width: 0;
+}
+@media (max-width: 640px) {
+  .settings-panel {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 18px;
+  }
+}
 .eyebrow {
   margin-bottom: 12px;
   color: #555;

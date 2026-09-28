@@ -119,12 +119,7 @@ if ((CREATE)); then
   fi
 fi
 
-if [[ -z "$OWNER_EMAIL" ]] && ((UPDATE == 0 && NON_INTERACTIVE == 0)) && has_tty; then
-  OWNER_EMAIL="$(prompt 'Owner email: ')"
-fi
-if [[ -z "$OWNER_EMAIL" ]] && ((UPDATE == 0)); then
-  fail 'Provide --owner-email for a fresh Agora installation.'
-fi
+
 if [[ -n "$OWNER_EMAIL" ]]; then
   [[ "$OWNER_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || fail 'Provide a valid --owner-email.'
 fi
@@ -163,7 +158,6 @@ REMOTE_DIR="$APP_DIR"
 [[ -n "$REMOTE_DIR" ]] || REMOTE_DIR=''
 SOURCE_COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
 [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail 'Cannot pin the remote installer to this source checkout commit.'
-if ((UPDATE == 0)) && [[ -z "$OWNER_EMAIL" ]]; then fail 'An owner email is required for a fresh install.'; fi
 REMOTE_DIR_B64="$(printf '%s' "$REMOTE_DIR" | base64 | tr -d '\r\n')"
 OWNER_EMAIL_B64="$(printf '%s' "$OWNER_EMAIL" | base64 | tr -d '\r\n')"
 
