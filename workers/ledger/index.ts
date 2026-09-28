@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries(id TEXT PRIMARY KEY,endpoint_id TE
 CREATE INDEX IF NOT EXISTS webhook_delivery_due ON webhook_deliveries(status,next_attempt_at);
 CREATE INDEX IF NOT EXISTS webhook_delivery_endpoint ON webhook_deliveries(endpoint_id,created_at,id);
 CREATE TABLE IF NOT EXISTS webhook_attempts(id TEXT PRIMARY KEY,delivery_id TEXT NOT NULL,attempt INTEGER NOT NULL,started_at TEXT NOT NULL,finished_at TEXT,http_status INTEGER,duration_ms INTEGER,error TEXT,response_excerpt TEXT NOT NULL DEFAULT '',UNIQUE(delivery_id,attempt));
+CREATE TABLE IF NOT EXISTS stripe_risk_signals(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,payment_id TEXT NOT NULL,mode TEXT NOT NULL CHECK(mode IN ('test','live')),account_id TEXT,kind TEXT NOT NULL CHECK(kind IN ('early_fraud_warning','review')),state TEXT NOT NULL,actionable INTEGER,fraud_type TEXT,reason TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,event_id TEXT NOT NULL UNIQUE);
+CREATE INDEX IF NOT EXISTS stripe_risk_scope ON stripe_risk_signals(tenant_id,mode,created_at,id);
 CREATE INDEX IF NOT EXISTS payment_created ON payments(created_at);
 CREATE INDEX IF NOT EXISTS event_created ON events(created_at);
 `;
@@ -179,6 +181,9 @@ export class AgoraLedgerDO extends DurableObject<Env> {
       }
       if(path==='/api/console/activity'&&method==='GET'){
         const actor=this.service.consoleActor(request);const value=url.searchParams.get('range')||'30d';const ranges=new Set(['1h','24h','7d','30d','90d','1y','all','custom']);if(!ranges.has(value))throw new ApiError(422,'invalid_request','Choose a supported activity range.');const from=url.searchParams.get('from')||undefined,to=url.searchParams.get('to')||undefined;if(value==='custom'&&(!from||!to))throw new ApiError(422,'invalid_request','Custom range needs a start and end date.');try{return json(this.service.paymentActivity(actor.tenant_id,value as '1h'|'24h'|'7d'|'30d'|'90d'|'1y'|'all'|'custom',from,to),200,{'X-Request-Id':requestId});}catch(error){if(error instanceof Error)throw new ApiError(422,'invalid_range',error.message);throw error;}
+      }
+      if(path==='/api/console/risk-signals'&&method==='GET'){
+        const actor=this.service.consoleActor(request);const queryMode=url.searchParams.get('mode')||this.service.stripeRuntimeEnvironment().AGORA_STRIPE_MODE;if(queryMode!=='test'&&queryMode!=='live')throw new ApiError(422,'invalid_mode','Choose Stripe test or live mode.');const rawLimit=url.searchParams.get('limit');const limit=rawLimit===null?25:Number(rawLimit);if(!Number.isInteger(limit)||limit<1||limit>100)throw new ApiError(422,'invalid_limit','Limit must be between 1 and 100.');return json(this.service.listStripeRiskSignals(actor,queryMode,url.searchParams.get('cursor')||undefined,limit),200,{'X-Request-Id':requestId});
       }
       if (path === '/api/console/stripe-config' && method === 'PATCH') {
         const actor=this.service.consoleActor(request,true);if(actor.tenant_id!=='owner')throw new ApiError(403,'permission_denied','Only the workspace owner can configure Stripe.');

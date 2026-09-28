@@ -26,6 +26,7 @@ export const createProduct=service.createProduct;
 export const archiveProduct=service.archiveProduct;
 export const archivePayment=service.archivePayment;
 export const paymentActivity=service.paymentActivity;
+export const listStripeRiskSignals=service.listStripeRiskSignals;
 export const createPayment=service.createPayment;
 export const createRefund=service.createRefund;
 export const resolveApproval=service.resolveApproval;
