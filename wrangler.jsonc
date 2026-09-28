@@ -14,7 +14,7 @@
     "AGORA_PAYMENT_PROVIDER": "sandbox",
     "AGORA_PUBLIC_ORIGIN": "https://agora-payments.vercel.app",
     "AGORA_OWNER_EMAIL": "kyanam.preetham@gmail.com",
-    "AGORA_VERSION": "ccea607"
+    "AGORA_VERSION": "07e6ba7"
   },
   "durable_objects": {
     "bindings": [
