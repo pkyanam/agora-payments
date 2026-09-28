@@ -6,8 +6,7 @@ const inter = Inter({ subsets: ["latin"], variable: "--font-inter" })
 const mono = Geist_Mono({ subsets: ["latin"], variable: "--font-code" })
 export const metadata: Metadata = {
   title: "Agora payments",
-  description:
-    "Payments for your business, team, and agents. Test mode is enabled.",
+  description: "Payment operations and API access for Belweave merchants.",
   robots: { index: false, follow: false },
 }
 export default function RootLayout({

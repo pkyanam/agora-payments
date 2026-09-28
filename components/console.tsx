@@ -1,5 +1,6 @@
 "use client"
 import { useEffect, useState, useCallback, useRef, type FormEvent } from "react"
+import Link from "next/link"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
   Home03Icon,
@@ -58,7 +59,7 @@ import {
   TooltipProvider,
 } from "@/components/ui/tooltip"
 import { toast } from "sonner"
-import type { Snapshot, Payment } from "@/lib/types"
+import type { Snapshot, Payment, Registration } from "@/lib/types"
 import { AreaChart } from "@/components/dither-kit/area-chart"
 import { Area } from "@/components/dither-kit/area"
 import { Grid } from "@/components/dither-kit/grid"
@@ -70,7 +71,11 @@ const money = (n: number) =>
     n / 100
   )
 const date = (s: string) =>
-  new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+  new Date(s).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  })
 const views = [
   "Overview",
   "Payments",
@@ -79,7 +84,40 @@ const views = [
   "Developers",
 ] as const
 type View = (typeof views)[number]
+type CreatedPayment = Payment & {
+  checkout_url?: string
+  checkout_token?: string
+  provider?: "sandbox" | "stripe"
+  provider_mode?: "test" | "live"
+}
+type MerchantProvider = {
+  provider: "stripe"
+  mode: "test" | "live"
+  status: "not_connected" | "charges_pending" | "connected" | "disconnected"
+  charges_enabled: boolean
+}
+type ApiResponse = {
+  error?: { message?: string; request_id?: string }
+  [key: string]: unknown
+}
+type ApiDiagnostic = { status: number; requestId?: string; storage?: string }
+const parseApiResponse = (raw: string): ApiResponse => {
+  const value: unknown = JSON.parse(raw)
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as ApiResponse
+    : {}
+}
+const isProviderMode = (value: unknown): value is "test" | "live" =>
+  value === "test" || value === "live"
+const isProviderStatus = (value: unknown): value is MerchantProvider["status"] =>
+  value === "not_connected" || value === "charges_pending" || value === "connected" || value === "disconnected"
 const icons = [Home03Icon, CreditCardIcon, PackageIcon, AiBrain01Icon, CodeIcon]
+const keyModeLabel = (mode?: "sandbox" | "test" | "live") =>
+  mode === "test" ? "Stripe test" : mode === "live" ? "Stripe live" : mode === "sandbox" ? "Sandbox" : "Mode unavailable"
+const workspaceKeyModeLabel = (data: Snapshot | null) =>
+  data?.mode === "stripe"
+    ? keyModeLabel(data.provider_mode)
+    : "Sandbox"
 const permissionSets = {
   read: ["products:read", "payments:read", "events:read"],
   payments: ["products:read", "payments:read", "payments:write", "events:read"],
@@ -101,9 +139,14 @@ export default function Console() {
     "checking" | "signed-out" | "enroll" | "verify" | "recovery" | "pending" | "signed-in"
   >("checking")
   const [authPassword, setAuthPassword] = useState("")
+  const [authEmail, setAuthEmail] = useState("")
+  const [authRole, setAuthRole] = useState<"owner" | "merchant">("owner")
+  const [authTenantId, setAuthTenantId] = useState("")
   const [authError, setAuthError] = useState("")
+  const [authErrorDetails, setAuthErrorDetails] = useState<ApiDiagnostic | null>(null)
   const [authBusy, setAuthBusy] = useState(false)
   const [mfaSecret, setMfaSecret] = useState("")
+  const [mfaUri, setMfaUri] = useState("")
   const [mfaCode, setMfaCode] = useState("")
   const [useRecoveryCode, setUseRecoveryCode] = useState(false)
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([])
@@ -116,42 +159,97 @@ export default function Console() {
   const [query, setQuery] = useState("")
   const [busy, setBusy] = useState(false)
   const [product, setProduct] = useState("")
-  const [created, setCreated] = useState<Payment | null>(null)
+  const [created, setCreated] = useState<CreatedPayment | null>(null)
   const [secret, setSecret] = useState("")
   const [keyKind, setKeyKind] = useState("agent")
+  const [keyTenantId, setKeyTenantId] = useState("")
+  const [keyTenantName, setKeyTenantName] = useState("")
+  const [registrationReview, setRegistrationReview] = useState<{
+    registration: Registration
+    decision: "approve" | "reject"
+  } | null>(null)
+  const [merchantInvite, setMerchantInvite] = useState<{
+    business_name: string
+    email: string
+    invite_url: string
+    expires_at: string
+  } | null>(null)
+  const [inviteBusyTenant, setInviteBusyTenant] = useState("")
+  const [merchantProvider, setMerchantProvider] = useState<MerchantProvider | null>(null)
+  const [merchantProviderError, setMerchantProviderError] = useState("")
+  const [providerRefresh, setProviderRefresh] = useState(0)
   const [permission, setPermission] =
     useState<keyof typeof permissionSets>("full")
   const [codeTab, setCodeTab] = useState("typescript")
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [sidebarReady, setSidebarReady] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const [providerBusyTenant, setProviderBusyTenant] = useState("")
+  function setApiAuthError(response: Response, body: ApiResponse, fallback: string) {
+    setAuthError(body.error?.message || fallback)
+    setAuthErrorDetails({
+      status: response.status,
+      requestId: body.error?.request_id || response.headers.get("X-Request-Id") || undefined,
+      storage: response.headers.get("X-Agora-Storage") || undefined,
+    })
+  }
+  function renderAuthError() {
+    if (!authError) return null
+    return (
+      <div id="auth-error" className="auth-error" role="alert">
+        <p>{authError}</p>
+        {authErrorDetails && (
+          <details>
+            <summary>Technical details</summary>
+            <p>HTTP {authErrorDetails.status}</p>
+            {authErrorDetails.requestId && <p>Reference: {authErrorDetails.requestId}</p>}
+            {authErrorDetails.storage && <p>Storage: {authErrorDetails.storage}</p>}
+          </details>
+        )}
+      </div>
+    )
+  }
   const load = useCallback(async () => {
     try {
       const r = await fetch("/api/console", { cache: "no-store" })
       const raw = await r.text()
-      let b: any
+      let b: ApiResponse
       try {
-        b = JSON.parse(raw)
+        b = parseApiResponse(raw)
       } catch {
         throw new Error(`Workspace API returned ${r.status}. Please retry.`)
       }
-      if (!r.ok)
+      if (!r.ok) {
+        if (r.status === 401) {
+          setData(null)
+          setAuthState("signed-out")
+          setAuthError("Your session expired. Sign in again to continue.")
+        }
         throw new Error(b.error?.message || "Unable to load workspace.")
-      setData(b)
+      }
+      setData(b as unknown as Snapshot)
       setError("")
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Unable to load workspace.")
+      setError(
+        e instanceof TypeError
+          ? "Connection failed. Check the network and try again."
+          : e instanceof Error
+            ? e.message
+            : "Unable to load workspace."
+      )
     }
   }, [])
   const checkSession = useCallback(async () => {
     if (recoveryPending.current) return
     try {
       const response = await fetch("/api/auth/session", { cache: "no-store" })
-      const body: any = await response.json()
+      const body = await response.json() as ApiResponse & { role?: string; tenant_id?: string; access_status?: string; mfa_stage?: string; authenticated?: boolean }
       if (!response.ok)
         throw new Error(
           body.error?.message || "Unable to verify account access."
         )
+      setAuthRole(body.role === "merchant" ? "merchant" : "owner")
+      setAuthTenantId(typeof body.tenant_id === "string" ? body.tenant_id : "")
       if (body.access_status === "pending") {
         setData(null)
         setAuthState("pending")
@@ -226,18 +324,24 @@ export default function Console() {
     event.preventDefault()
     setAuthBusy(true)
     setAuthError("")
+    setAuthErrorDetails(null)
     try {
       const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: authPassword }),
+        body: JSON.stringify({ email: authEmail.trim(), password: authPassword }),
       })
-      const body: any = await response.json()
-      if (!response.ok)
-        throw new Error(body.error?.message || "Sign-in failed.")
+      const body = await response.json() as ApiResponse & { role?: string; tenant_id?: string; stage?: string; secret?: string; otpauth_url?: string; authenticated?: boolean; access_status?: string }
+      if (!response.ok) {
+        setApiAuthError(response, body, "Sign-in failed.")
+        return
+      }
       setAuthPassword("")
+      setAuthRole(body.role === "merchant" ? "merchant" : "owner")
+      setAuthTenantId(typeof body.tenant_id === "string" ? body.tenant_id : "")
       if (body.stage === "enroll") {
         setMfaSecret(body.secret || "")
+        setMfaUri(body.otpauth_url || "")
         setAuthState("enroll")
       } else if (body.stage === "verify") {
         setAuthState("verify")
@@ -257,10 +361,13 @@ export default function Console() {
     event.preventDefault()
     setAuthBusy(true)
     setAuthError("")
+    setAuthErrorDetails(null)
     try {
       const enrolling = authState === "enroll"
       const response = await fetch(
-        enrolling ? "/api/auth/mfa/enroll" : "/api/auth/mfa/verify",
+        enrolling
+          ? authRole === "merchant" ? "/api/auth/merchant/mfa/enroll" : "/api/auth/mfa/enroll"
+          : authRole === "merchant" ? "/api/auth/merchant/mfa/verify" : "/api/auth/mfa/verify",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -273,11 +380,16 @@ export default function Console() {
           ),
         }
       )
-      const body: any = await response.json()
-      if (!response.ok) throw new Error(body.error?.message || "Code was not accepted.")
+      const body = await response.json() as ApiResponse & { recovery_codes?: unknown }
+      if (!response.ok) {
+        setApiAuthError(response, body, "Code was not accepted.")
+        return
+      }
       setMfaCode("")
       if (enrolling) {
-        const codes = Array.isArray(body.recovery_codes) ? body.recovery_codes : []
+        const codes = Array.isArray(body.recovery_codes)
+          ? body.recovery_codes.filter((code): code is string => typeof code === "string")
+          : []
         if (!codes.length) throw new Error("Recovery codes were not returned. Contact support.")
         recoveryPending.current = true
         setRecoveryCodes(codes)
@@ -302,37 +414,57 @@ export default function Console() {
     setAuthBusy(true)
     try {
       const response = await fetch("/api/auth/logout", { method: "POST" })
-      const body: any = await response.json()
+      const body = await response.json() as ApiResponse
       if (!response.ok)
         throw new Error(body.error?.message || "Sign-out failed.")
       setData(null)
       setAuthError("")
       setMfaSecret("")
+      setMfaUri("")
       setRecoveryCodes([])
       setAuthState("signed-out")
+      setAuthRole("owner")
+      setAuthTenantId("")
+      setAuthEmail("")
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : "Sign-out failed.")
     } finally {
       setAuthBusy(false)
     }
   }
-  async function action(action: string, payload: unknown) {
+  async function action<T = ApiResponse>(action: string, payload: unknown): Promise<T> {
     const fingerprint = JSON.stringify({ action, payload })
     const key = pendingWrites.current.get(fingerprint) || crypto.randomUUID()
     pendingWrites.current.set(fingerprint, key)
-    const r = await fetch("/api/console", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Idempotency-Key": key },
-      body: fingerprint,
-    })
-    const b: any = await r.json()
+    let r: Response
+    try {
+      r = await fetch("/api/console", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+        body: fingerprint,
+      })
+    } catch {
+      throw new Error("Connection failed. Check the network and try again.")
+    }
+    const raw = await r.text()
+    let b: ApiResponse
+    try {
+      b = parseApiResponse(raw)
+    } catch {
+      throw new Error(`Workspace API returned ${r.status}. Please retry.`)
+    }
     if (!r.ok) {
-      if (r.status < 500) pendingWrites.current.delete(fingerprint)
+        if (r.status === 401) {
+          setData(null)
+          setAuthState("signed-out")
+          setAuthError("Your session expired. Sign in again to continue.")
+        }
+        if (r.status < 500) pendingWrites.current.delete(fingerprint)
       throw new Error(b.error?.message || "The action could not be completed.")
     }
     pendingWrites.current.delete(fingerprint)
     await load()
-    return b
+    return b as unknown as T
   }
   async function perform(fn: () => Promise<void>) {
     setBusy(true)
@@ -342,6 +474,112 @@ export default function Console() {
       toast.error(e instanceof Error ? e.message : "Something went wrong.")
     } finally {
       setBusy(false)
+    }
+  }
+  async function connectTenant(tenantId: string) {
+    setProviderBusyTenant(tenantId)
+    try {
+      const response = await fetch(`/api/merchants/${encodeURIComponent(tenantId)}/stripe/connect`, {
+        method: "POST",
+        cache: "no-store",
+      })
+      const raw = await response.text()
+      let body: ApiResponse & { authorize_url?: string }
+      try {
+        body = parseApiResponse(raw)
+      } catch {
+        throw new Error(`Provider API returned ${response.status}. Please retry.`)
+      }
+      if (!response.ok) throw new Error(body.error?.message || "Stripe connection could not be started.")
+      const authorize = new URL(body.authorize_url || "")
+      if (authorize.protocol !== "https:" || authorize.hostname !== "connect.stripe.com") {
+        throw new Error("The provider returned an unexpected authorization URL. Contact support.")
+      }
+      window.location.assign(authorize.toString())
+    } catch (reason) {
+      toast.error(reason instanceof Error ? reason.message : "Stripe connection could not be started.")
+      setProviderBusyTenant("")
+    }
+  }
+  async function disconnectTenant(tenantId: string, businessName = "this merchant") {
+    if (!window.confirm(`Disconnect Stripe from ${businessName}? This revokes its API keys and stops new payments.`)) return
+    setProviderBusyTenant(tenantId)
+    try {
+      const response = await fetch(`/api/merchants/${encodeURIComponent(tenantId)}/stripe/connect`, {
+        method: "DELETE",
+        cache: "no-store",
+      })
+      const raw = await response.text()
+      let body: ApiResponse
+      try {
+        body = parseApiResponse(raw)
+      } catch {
+        throw new Error(`Provider API returned ${response.status}. Please retry.`)
+      }
+      if (!response.ok) throw new Error(body.error?.message || "Stripe could not be disconnected.")
+      toast.success("Stripe disconnected. New payments are disabled and tenant API keys were revoked.")
+      await load()
+      setProviderRefresh((current) => current + 1)
+    } catch (reason) {
+      toast.error(reason instanceof Error ? reason.message : "Stripe could not be disconnected.")
+    } finally {
+      setProviderBusyTenant("")
+    }
+  }
+  useEffect(() => {
+    if (authState !== "signed-in" || authRole !== "merchant" || !authTenantId) {
+      setMerchantProvider(null)
+      setMerchantProviderError("")
+      return
+    }
+    let active = true
+    setMerchantProvider(null)
+    setMerchantProviderError("")
+    fetch(`/api/merchants/${encodeURIComponent(authTenantId)}/stripe/connect`, { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json() as ApiResponse & { mode?: unknown; status?: unknown; charges_enabled?: unknown; provider?: unknown }
+        if (!response.ok) throw new Error(body.error?.message || "Unable to load Stripe connection status.")
+        if (body.provider !== "stripe" || !isProviderMode(body.mode) || !isProviderStatus(body.status)) {
+          throw new Error("The Stripe connection status response was incomplete.")
+        }
+        if (active) setMerchantProvider({ provider: "stripe", mode: body.mode, status: body.status, charges_enabled: body.charges_enabled === true })
+      })
+      .catch((reason) => {
+        if (active) setMerchantProviderError(reason instanceof Error ? reason.message : "Unable to load Stripe connection status.")
+      })
+    return () => { active = false }
+  }, [authRole, authState, authTenantId, providerRefresh])
+  useEffect(() => {
+    const url = new URL(window.location.href)
+    const result = url.searchParams.get("stripe_connect")
+    if (!result) return
+    url.searchParams.delete("stripe_connect")
+    window.history.replaceState(null, "", `${url.pathname}${url.search}`)
+    if (result === "connected") {
+      toast.success("Stripe connection saved. Payment eligibility is checked when you create a payment.")
+    } else {
+      toast.error("Stripe connection was not completed. You can try again from this page.")
+    }
+    setProviderRefresh((current) => current + 1)
+    void load()
+  }, [load])
+  async function inviteMerchant(registration: Registration) {
+    setInviteBusyTenant(registration.tenant_id)
+    try {
+      const result = await action("create_invite", { tenant_id: registration.tenant_id })
+      if (typeof result.invite_url !== "string" || typeof result.expires_at !== "string") {
+        throw new Error("The invite response was incomplete. Please retry.")
+      }
+      setMerchantInvite({
+        business_name: registration.business_name,
+        email: typeof result.email === "string" ? result.email : registration.email,
+        invite_url: result.invite_url,
+        expires_at: result.expires_at,
+      })
+    } catch (reason) {
+      toast.error(reason instanceof Error ? reason.message : "Merchant invite could not be created.")
+    } finally {
+      setInviteBusyTenant("")
     }
   }
   const copy = async (text: string) => {
@@ -366,9 +604,12 @@ export default function Console() {
     setCreated(null)
     setDialog("payment")
   }
-  const openKey = (kind = "agent") => {
+  const openKey = (kind = "agent", tenant?: { id: string; name: string }) => {
     setKeyKind(kind)
     setSecret("")
+    setKeyTenantId(tenant?.id || "")
+    setKeyTenantName(tenant?.name || "")
+    if (tenant) setPermission("payments")
     setDialog("key")
   }
   const pending = data?.approvals.filter((a) => a.status === "pending") || []
@@ -388,13 +629,13 @@ export default function Console() {
     ? data?.payments.find((p) => p.id === selected.id) || selected
     : null
   const chartData = Array.from({ length: 28 }, (_, i) => {
-    const day = new Date()
-    day.setHours(0, 0, 0, 0)
-    day.setDate(day.getDate() - 27 + i)
+    const now = new Date()
+    const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+    day.setUTCDate(day.getUTCDate() - 27 + i)
+    const dayKey = day.toISOString().slice(0, 10)
     const amount = paid
       .filter((payment) => {
-        const createdAt = new Date(payment.created_at)
-        return createdAt.toDateString() === day.toDateString()
+        return new Date(payment.created_at).toISOString().slice(0, 10) === dayKey
       })
       .reduce((total, payment) => total + payment.amount, 0)
     const label = date(day.toISOString())
@@ -481,16 +722,17 @@ export default function Console() {
     )
   }
   const code = {
-    typescript: `import { Agora } from './sdk/agora';\n\nconst agora = new Agora({\n  apiKey: process.env.AGORA_API_KEY!,\n  baseUrl: '${typeof location !== "undefined" ? location.origin : "http://agora.localhost:1355"}'\n});\n\nconst payment = await agora.payments.create(\n  { product_id: '${data?.products[0]?.id || "prod_studio"}' },\n  { idempotencyKey: 'order-001' }\n);\n\n// Send the customer to payment.checkout_url`,
+    typescript: `const response = await fetch("${typeof location !== "undefined" ? location.origin : "https://agora.example.com"}/api/v1/payments", {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGORA_API_KEY}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": "order-001",\n  },\n  body: JSON.stringify({ product_id: "${data?.products[0]?.id || "prod_studio"}" }),\n});\n\nif (!response.ok) throw new Error(await response.text());\nconst payment = await response.json();\n// Redirect the customer to the returned hosted checkout URL.\nconsole.log(payment.checkout_url);`,
     curl: `curl -X POST "$AGORA_URL/api/v1/payments" \\\n  -H "Authorization: Bearer $AGORA_API_KEY" \\\n  -H "Idempotency-Key: order-001" \\\n  -H "Content-Type: application/json" \\\n  -d '{"product_id":"${data?.products[0]?.id || "prod_studio"}"}'`,
-    cli: `export AGORA_URL="${typeof location !== "undefined" ? location.origin : "http://agora.localhost:1355"}"\nexport AGORA_API_KEY="your-test-key"\n\nnode cli/agora.mjs products list\n\nnode cli/agora.mjs payments create \\\n  --product ${data?.products[0]?.id || "prod_studio"} \\\n  --idempotency-key order-001\n\n# JSON in. JSON out. Human or agent.`,
+    cli: `export AGORA_URL="${typeof location !== "undefined" ? location.origin : "https://agora.example.com"}"\nexport AGORA_API_KEY="your-test-key"\n\nagora products list\nagora payments create \\\n  --product ${data?.products[0]?.id || "prod_studio"} \\\n  --idempotency-key order-001\n\n# Install instructions: github.com/pkyanam/agora-cli`,
   }
   const renderSidebar = (mobile = false) => (
     <aside
       className={`sidebar ${mobile ? "mobile-sidebar" : "desktop-sidebar"}`}
+      id={mobile ? undefined : "desktop-navigation"}
       aria-label="Workspace sidebar"
     >
-      <a
+      <Link
         className="wordmark"
         href="/"
         onClick={(e) => {
@@ -500,21 +742,25 @@ export default function Console() {
         aria-label="Agora overview"
       >
         agora<span>·</span>
-      </a>
+      </Link>
       <div className="workspace">
         <span className="avatar" aria-hidden="true">A</span>
         <div className="workspace-copy">
-          Acme Studio<small>Workspace</small>
+          {authRole === "merchant" ? "Merchant" : "Belweave"}<small>Workspace</small>
         </div>
       </div>
       <nav aria-label="Main navigation">
         {views.map((title, i) => (
-          <button
+          <a
             className={`nav-item ${view === title ? "active" : ""}`}
             aria-current={view === title ? "page" : undefined}
             aria-label={title}
+            href={title === "Overview" ? "/" : `/?view=${title}`}
             title={sidebarCollapsed && !mobile ? title : undefined}
-            onClick={() => navigate(title)}
+            onClick={(event) => {
+              event.preventDefault()
+              navigate(title)
+            }}
             key={title}
           >
             <HugeiconsIcon icon={icons[i]} size={19} aria-hidden="true" />
@@ -524,14 +770,18 @@ export default function Console() {
                 {pending.length}
               </span>
             )}
-          </button>
+          </a>
         ))}
       </nav>
       <div className="sidebar-bottom">
         <Tooltip>
-          <TooltipTrigger render={<button className="sandbox-mark" />}>Test mode</TooltipTrigger>
+          <TooltipTrigger render={<span className="sandbox-mark" tabIndex={0} role="note" aria-label={data?.mode === "stripe" ? `Stripe ${data.provider_mode || "mode unknown"}` : "Test mode"} />}>{data?.mode === "stripe" ? data.provider_mode ? `Stripe ${data.provider_mode}` : "Stripe mode unknown" : "Test mode"}</TooltipTrigger>
           <TooltipContent>
-            Test transactions only. No live processing is connected.
+            {data?.mode === "stripe"
+              ? data.provider_mode
+                ? `Payments use the configured Stripe ${data.provider_mode} account. Payment status follows verified provider events.`
+                : "The payment provider mode is unavailable. Verify configuration before creating a payment."
+              : "Test transactions only. No live funds move."}
           </TooltipContent>
         </Tooltip>
         <a className="quiet-link" href="/api-reference" aria-label="API reference">
@@ -552,7 +802,7 @@ export default function Console() {
     return (
       <main className="auth-page">
         <section className="auth-card" aria-labelledby="auth-title">
-          <a className="wordmark" href="/" aria-label="Agora home">agora<span>·</span></a>
+          <Link className="wordmark" href="/" aria-label="Agora home">agora<span>·</span></Link>
           <h1 id="auth-title">Registration pending</h1>
           <p>Your account is awaiting approval. Payment data and API access remain unavailable until approval is complete.</p>
           <p>Questions? <a className="inline-link" href="mailto:info@belweave.com">info@belweave.com</a></p>
@@ -565,7 +815,7 @@ export default function Console() {
     return (
       <main className="auth-page">
         <section className="auth-card" aria-labelledby="auth-title">
-          <a className="wordmark" href="/" aria-label="Agora home">agora<span>·</span></a>
+          <Link className="wordmark" href="/" aria-label="Agora home">agora<span>·</span></Link>
           <h1 id="auth-title">Set up an authenticator</h1>
           {mfaSecret ? (
             <>
@@ -576,13 +826,18 @@ export default function Console() {
                 <Button type="button" variant="secondary" onClick={() => void copy(mfaSecret)}>
                   Copy setup key <HugeiconsIcon icon={Copy01Icon} aria-hidden="true" />
                 </Button>
+                {mfaUri && (
+                  <Button type="button" variant="ghost" onClick={() => void copy(mfaUri)}>
+                    Copy authenticator setup URI <HugeiconsIcon icon={Copy01Icon} aria-hidden="true" />
+                  </Button>
+                )}
               </div>
               <form className="form-stack" onSubmit={submitMfa}>
                 <div className="field">
                   <Label htmlFor="mfa-code">Authenticator code</Label>
                   <Input id="mfa-code" name="code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" minLength={6} maxLength={6} value={mfaCode} onChange={(event) => setMfaCode(event.target.value.replace(/\D/g, "").slice(0, 6))} aria-invalid={authError ? true : undefined} aria-describedby={authError ? "auth-error" : undefined} required autoFocus />
                 </div>
-                {authError && <p id="auth-error" className="auth-error" role="alert">{authError}</p>}
+                {renderAuthError()}
                 <Button type="submit" disabled={authBusy || mfaCode.length !== 6}>{authBusy ? "Verifying…" : "Verify and finish setup"}</Button>
               </form>
             </>
@@ -600,7 +855,7 @@ export default function Console() {
     return (
       <main className="auth-page">
         <section className="auth-card" aria-labelledby="auth-title">
-          <a className="wordmark" href="/" aria-label="Agora home">agora<span>·</span></a>
+          <Link className="wordmark" href="/" aria-label="Agora home">agora<span>·</span></Link>
           <h1 id="auth-title">Verify your identity</h1>
           <p>Enter a code from your authenticator app{useRecoveryCode ? " or recovery list" : ""}.</p>
           <form className="form-stack" onSubmit={submitMfa}>
@@ -608,7 +863,7 @@ export default function Console() {
               <Label htmlFor="mfa-code">{useRecoveryCode ? "Recovery code" : "Authenticator code"}</Label>
               <Input id="mfa-code" name="code" type="text" inputMode={useRecoveryCode ? "text" : "numeric"} autoComplete={useRecoveryCode ? "off" : "one-time-code"} maxLength={useRecoveryCode ? 32 : 6} value={mfaCode} onChange={(event) => setMfaCode(event.target.value.trim().slice(0, useRecoveryCode ? 32 : 6))} aria-invalid={authError ? true : undefined} aria-describedby={authError ? "auth-error" : undefined} required autoFocus />
             </div>
-            {authError && <p id="auth-error" className="auth-error" role="alert">{authError}</p>}
+            {renderAuthError()}
             <Button type="submit" disabled={authBusy || !mfaCode.trim()}>{authBusy ? "Verifying…" : "Verify and sign in"}</Button>
           </form>
           <button type="button" className="text-button" onClick={() => { setUseRecoveryCode((value) => !value); setMfaCode(""); setAuthError("") }}>
@@ -623,7 +878,7 @@ export default function Console() {
     return (
       <main className="auth-page">
         <section className="auth-card recovery-card" aria-labelledby="auth-title">
-          <a className="wordmark" href="/" aria-label="Agora home">agora<span>·</span></a>
+          <Link className="wordmark" href="/" aria-label="Agora home">agora<span>·</span></Link>
           <h1 id="auth-title">Save your recovery codes</h1>
           <p>Each code works once. Store these somewhere private; they will not be shown again.</p>
           <ul className="recovery-code-list" aria-label="One-time recovery codes">
@@ -639,16 +894,33 @@ export default function Console() {
     return (
       <main className="auth-page">
         <section className="auth-card" aria-labelledby="auth-title">
-          <a className="wordmark" href="/">
+          <Link className="wordmark" href="/">
             agora<span>·</span>
-          </a>
+          </Link>
           <h1 id="auth-title">Sign in</h1>
           <p>Sign in to your Agora account.</p>
+          <p className="auth-account">Owner and merchant accounts</p>
           <form className="form-stack" onSubmit={login}>
             <div className="field">
-              <Label htmlFor="owner-password">Password</Label>
+              <Label htmlFor="account-email">Email address</Label>
               <Input
-                id="owner-password"
+                id="account-email"
+                name="email"
+                type="email"
+                autoComplete="username"
+                placeholder="you@example.com"
+                value={authEmail}
+                onChange={(event) => setAuthEmail(event.target.value)}
+                aria-invalid={authError ? true : undefined}
+                aria-describedby={authError ? "auth-error" : undefined}
+                required
+                autoFocus
+              />
+            </div>
+            <div className="field">
+              <Label htmlFor="auth-password">Password</Label>
+              <Input
+                id="auth-password"
                 name="password"
                 type="password"
                 autoComplete="current-password"
@@ -657,14 +929,9 @@ export default function Console() {
                 aria-invalid={authError ? true : undefined}
                 aria-describedby={authError ? "auth-error" : undefined}
                 required
-                autoFocus
               />
             </div>
-            {authError && (
-              <p id="auth-error" className="auth-error" role="alert">
-                {authError}
-              </p>
-            )}
+            {renderAuthError()}
             <Button type="submit" disabled={authBusy}>
               {authBusy ? "Signing in…" : "Sign in"}
             </Button>
@@ -687,6 +954,7 @@ export default function Console() {
                 type="button"
                 className="sidebar-toggle desktop-sidebar-toggle"
                 aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+                aria-controls="desktop-navigation"
                 aria-expanded={!sidebarCollapsed}
                 onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
               >
@@ -711,9 +979,7 @@ export default function Console() {
             </div>
             <div className="topbar-right">
               <span>US · USD</span>
-              {typeof window !== "undefined" &&
-              !["localhost", "127.0.0.1"].includes(window.location.hostname) &&
-              !window.location.hostname.endsWith(".localhost") ? (
+              {authState === "signed-in" && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -722,20 +988,11 @@ export default function Console() {
                 >
                   Sign out
                 </Button>
-              ) : (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={<button className="profile-circle" />}
-                  >
-                    A
-                  </TooltipTrigger>
-                  <TooltipContent>Acme Studio · Workspace owner</TooltipContent>
-                </Tooltip>
               )}
             </div>
           </header>
           {error ? (
-            <section className="error-state">
+            <section className="error-state" role="alert" aria-live="assertive">
               <h1>Let’s reconnect.</h1>
               <p>{error}</p>
               <Button onClick={load}>Try again</Button>
@@ -770,10 +1027,12 @@ export default function Console() {
                       </div>
                       <p className="subtle">
                         {paid.length} successful payments{" "}
-                        <span className="inline-dot">·</span> Includes sample
-                        activity
+                        {paid.some((payment) => payment.sample) && (
+                          <><span className="inline-dot">·</span> Includes sample activity</>
+                        )}
+                        <span className="inline-dot">·</span> UTC
                       </p>
-                      <div className="volume-chart">
+                      {volumeSeries.some((day) => day.amount > 0) ? <div className="volume-chart">
                         <AreaChart
                           data={volumeSeries}
                           config={{
@@ -801,11 +1060,11 @@ export default function Console() {
                             valueFormatter={(value) => money(value)}
                           />
                         </AreaChart>
-                      </div>
+                      </div> : <p className="chart-empty">No successful payments in the last 28 days.</p>}
                       <table className="sr-only">
                         <caption>
                           Daily payments and cumulative payment volume for the
-                          last 28 days
+                          last 28 UTC dates
                         </caption>
                         <thead>
                           <tr>
@@ -820,6 +1079,7 @@ export default function Console() {
                               <th scope="row">
                                 {day.day.toLocaleDateString("en-US", {
                                   dateStyle: "long",
+                                  timeZone: "UTC",
                                 })}
                               </th>
                               <td>{money(day.amount)}</td>
@@ -975,14 +1235,45 @@ export default function Console() {
                 <>
                   <section className="page-heading">
                     <div>
-                      <h1>Agents</h1>
-                      <p>Keys, permissions, and approvals.</p>
+                      <h1>{authRole === "merchant" ? "Access" : "Agents"}</h1>
+                      <p>{authRole === "merchant" ? "Provider connection, API keys, and refund approvals." : "Keys, permissions, and approvals."}</p>
                     </div>
                     <Button onClick={() => openKey()}>
                       <HugeiconsIcon icon={PlusSignIcon} />
                       Add agent
                     </Button>
                   </section>
+                  {authRole === "merchant" && (
+                    <section className="merchant-provider-panel" aria-labelledby="merchant-provider-title">
+                      <div>
+                        <h2 id="merchant-provider-title">Stripe connection</h2>
+                        {merchantProviderError ? (
+                          <p role="alert">{merchantProviderError}</p>
+                        ) : merchantProvider ? (
+                          <p>
+                            {merchantProvider.status === "connected" && merchantProvider.charges_enabled
+                              ? `Connected in ${merchantProvider.mode} mode. Stripe reports charges enabled.`
+                              : merchantProvider.status === "charges_pending"
+                                ? `Stripe setup is incomplete in ${merchantProvider.mode} mode. Payments are unavailable until charges are enabled.`
+                                : `No verified Stripe account is connected in ${merchantProvider.mode} mode. Payments remain unavailable.`}
+                          </p>
+                        ) : (
+                          <p role="status">Checking provider connection…</p>
+                        )}
+                      </div>
+                      {merchantProviderError ? (
+                        <Button variant="secondary" onClick={() => setProviderRefresh((current) => current + 1)}>Retry status</Button>
+                      ) : merchantProvider && !(merchantProvider.status === "connected" && merchantProvider.charges_enabled) ? (
+                        <Button disabled={providerBusyTenant === authTenantId} onClick={() => void connectTenant(authTenantId)}>
+                          {providerBusyTenant === authTenantId ? "Opening Stripe…" : merchantProvider.status === "charges_pending" ? "Continue Stripe setup" : "Connect Stripe"}
+                        </Button>
+                      ) : merchantProvider?.status === "connected" && (
+                        <Button variant="secondary" disabled={providerBusyTenant === authTenantId} onClick={() => void disconnectTenant(authTenantId, "your merchant account")}>
+                          Disconnect Stripe
+                        </Button>
+                      )}
+                    </section>
+                  )}
                   {pending.length > 0 && (
                     <section className="approvals">
                       <div className="section-heading">
@@ -1041,6 +1332,81 @@ export default function Console() {
                       ))}
                     </section>
                   )}
+                  {data.registrations.length > 0 && (
+                    <section className="merchant-registrations" aria-labelledby="merchant-registrations-title">
+                      <div className="section-heading">
+                        <h2 id="merchant-registrations-title">Merchant access</h2>
+                        <span className="subtle">Approval grants API access. Payments also require a connected provider account.</span>
+                      </div>
+                      <div className="registration-list">
+                        {data.registrations.map((registration) => {
+                          const tenantHasKey = data.credentials.some(
+                            (credential) => credential.tenant_id === registration.tenant_id && !credential.revoked
+                          )
+                          return (
+                            <article className="registration-row" key={registration.id}>
+                              <div className="registration-info">
+                                <h3>{registration.business_name}</h3>
+                                <p>{registration.owner_name} · <a className="inline-link" href={`mailto:${registration.email}`}>{registration.email}</a></p>
+                                <p className="registration-status">
+                                  <span>Status: {registration.status}</span>
+                                  <span>Stripe: {registration.provider_status === "not_connected" ? "Not connected" : registration.provider_status === "charges_pending" ? "Setup in progress" : registration.provider_status === "connected" ? `Connected${registration.provider_mode ? ` · ${registration.provider_mode === "test" ? "test" : "live"} mode` : ""}` : "Disconnected"}</span>
+                                </p>
+                                {registration.status === "approved" && (
+                                  <p className="registration-note">
+                                    {registration.provider_status === "connected" && registration.provider_mode === "live"
+                                      ? "Stripe is connected in live mode. Payment eligibility is checked again when each payment is created."
+                                      : registration.provider_status === "connected"
+                                        ? "Stripe is connected in test mode. Live payments remain unavailable until a live provider account is separately verified."
+                                        : registration.provider_status === "charges_pending"
+                                          ? "Stripe setup is incomplete. Payments remain unavailable until the account is verified."
+                                      : "API access is approved. Processor payments stay unavailable until the merchant’s Stripe account is connected and verified."}
+                                  </p>
+                                )}
+                                {registration.review_reason && <p className="registration-note">Review note: {registration.review_reason}</p>}
+                              </div>
+                              <div className="registration-actions">
+                                {registration.status === "pending" ? (
+                                  <>
+                                    <Button variant="secondary" disabled={busy} onClick={() => setRegistrationReview({ registration, decision: "reject" })}>Reject</Button>
+                                    <Button disabled={busy} onClick={() => setRegistrationReview({ registration, decision: "approve" })}>Approve merchant</Button>
+                                  </>
+                                ) : registration.status === "approved" ? (
+                                  <>
+                                    <Button
+                                      variant={registration.provider_status === "connected" ? "secondary" : "default"}
+                                      disabled={providerBusyTenant === registration.tenant_id}
+                                      onClick={() => registration.provider_status === "connected" ? disconnectTenant(registration.tenant_id, registration.business_name) : connectTenant(registration.tenant_id)}
+                                    >
+                                      {providerBusyTenant === registration.tenant_id
+                                        ? "Working…"
+                                        : registration.provider_status === "connected"
+                                          ? "Disconnect Stripe"
+                                          : registration.provider_status === "charges_pending"
+                                            ? "Continue Stripe setup"
+                                            : "Connect Stripe"}
+                                    </Button>
+                                    <Button variant={tenantHasKey ? "secondary" : "default"} onClick={() => openKey("developer", { id: registration.tenant_id, name: registration.business_name })}>
+                                      {tenantHasKey ? "Issue another API key" : "Issue API key"}
+                                    </Button>
+                                    <Button
+                                      variant="secondary"
+                                      disabled={inviteBusyTenant === registration.tenant_id}
+                                      onClick={() => void inviteMerchant(registration)}
+                                    >
+                                      {inviteBusyTenant === registration.tenant_id ? "Creating invite…" : "Create merchant invite"}
+                                    </Button>
+                                  </>
+                                ) : (
+                                  <span>Request rejected</span>
+                                )}
+                              </div>
+                            </article>
+                          )
+                        })}
+                      </div>
+                    </section>
+                  )}
                   <div className="agent-list">
                     {data.credentials
                       .filter((k) => k.kind === "agent")
@@ -1063,6 +1429,7 @@ export default function Console() {
                                   ? "Create checkouts"
                                   : "Read-only access"}
                             </p>
+                            <p>Key mode: {keyModeLabel(k.provider_mode ?? "sandbox")}</p>
                             <code>{k.prefix}••••</code>
                           </div>
                           <div className="agent-limits">
@@ -1165,11 +1532,7 @@ export default function Console() {
                         OpenAPI specification{" "}
                         <HugeiconsIcon icon={ArrowUpRight01Icon} size={16} />
                       </a>
-                      <small>
-                        The SDK and CLI are included in this project.
-                        <br />
-                        Not published to a package registry yet.
-                      </small>
+                      <small>Install the separate <a href="https://github.com/pkyanam/agora-cli" target="_blank" rel="noreferrer">Agora CLI repository</a>.</small>
                     </div>
                   </div>
                   <section className="keys-section">
@@ -1189,6 +1552,7 @@ export default function Console() {
                           <TableRow>
                             <TableHead>Name</TableHead>
                             <TableHead>Key</TableHead>
+                            <TableHead>Mode</TableHead>
                             <TableHead>Access</TableHead>
                             <TableHead>Status</TableHead>
                             <TableHead />
@@ -1204,6 +1568,7 @@ export default function Console() {
                               <TableCell>
                                 <code>{k.prefix}••••</code>
                               </TableCell>
+                              <TableCell>{keyModeLabel(k.provider_mode)}</TableCell>
                               <TableCell>
                                 {k.scopes.length} permissions
                               </TableCell>
@@ -1241,8 +1606,7 @@ export default function Console() {
                       </Button>
                     </div>
                     <p className="subtle mb-5">
-                      Persisted events, ready to poll. Outgoing webhook delivery
-                      is not connected yet.
+                      Persisted payment, refund, approval, and provider events.
                     </p>
                     {data.events.slice(0, 12).map((e) => (
                       <div className="event-row" key={e.id}>
@@ -1285,6 +1649,8 @@ export default function Console() {
           if (!open && !busy) {
             setDialog(null)
             setSecret("")
+            setKeyTenantId("")
+            setKeyTenantName("")
           }
         }}
       >
@@ -1295,22 +1661,32 @@ export default function Console() {
                 ? created
                   ? "Your checkout is ready."
                   : "Create a payment"
-                : dialog === "product"
+                    : dialog === "product"
                   ? "New product"
                   : secret
-                    ? "Your key. Your boundaries."
+                    ? keyTenantName
+                        ? `${workspaceKeyModeLabel(data)} key for ${keyTenantName}`
+                      : "API key created"
                     : keyKind === "agent"
                       ? "Give your agent a key."
-                      : "Create an API key."}
+                      : keyTenantName
+                        ? `Issue a ${workspaceKeyModeLabel(data)} key for ${keyTenantName}`
+                        : "Create an API key."}
             </DialogTitle>
             <DialogDescription>
               {dialog === "payment"
-                ? "Test mode checkout. No live charge will be made."
+                ? data?.mode === "stripe"
+                  ? data.provider_mode
+                    ? `A hosted checkout will open with the configured Stripe ${data.provider_mode} account. Payment status follows provider confirmation.`
+                    : "Provider mode is unavailable. Check configuration before creating a payment."
+                  : "Test mode checkout. No live charge will be made."
                 : dialog === "product"
                   ? "Set a fixed price in USD."
                   : secret
-                    ? "Copy this secret now. It won’t be shown again."
-                    : "Choose what this key can do. Change your mind? Revoke it anytime."}
+                    ? `Copy this ${workspaceKeyModeLabel(data)} key now. It will not be shown again. Keys remain bound to this mode; create another key if the workspace changes modes. Share it through a secure channel.`
+                    : keyTenantName
+                      ? `This key is restricted to this merchant’s data and bound to ${workspaceKeyModeLabel(data)}. Switching modes requires another key. It does not connect a processor.`
+                      : `Choose the access this key needs. It will be bound to ${workspaceKeyModeLabel(data)}; create another key if the workspace changes modes. You can revoke it at any time.`}
             </DialogDescription>
           </DialogHeader>
           {dialog === "payment" &&
@@ -1322,21 +1698,23 @@ export default function Console() {
                   <code>{created.id}</code>
                 </div>
                 <Button
-                  onClick={() =>
-                    window.open(
-                      `/checkout/${created.checkout_token}`,
-                      "_blank",
-                      "noopener"
-                    )
-                  }
+                  onClick={() => {
+                    const url = created.checkout_url ||
+                      (created.checkout_token
+                        ? `/checkout/${created.checkout_token}`
+                        : null)
+                    if (url) location.assign(url)
+                  }}
+                  disabled={!created.checkout_url && !created.checkout_token}
                 >
                   Open checkout <HugeiconsIcon icon={ArrowUpRight01Icon} />
                 </Button>
                 <Button
                   variant="secondary"
+                  disabled={!created.checkout_url && !created.checkout_token}
                   onClick={() =>
                     copy(
-                      `${location.origin}/checkout/${created.checkout_token}`
+                      created.checkout_url || `${location.origin}/checkout/${created.checkout_token}`
                     )
                   }
                 >
@@ -1350,7 +1728,7 @@ export default function Console() {
                   e.preventDefault()
                   const f = new FormData(e.currentTarget)
                   perform(async () => {
-                    const p = await action("create_payment", {
+                    const p = await action<CreatedPayment>("create_payment", {
                       product_id: product,
                       customer: String(f.get("customer") || "Guest"),
                     })
@@ -1468,15 +1846,19 @@ export default function Console() {
                   Copy secret key <HugeiconsIcon icon={Copy01Icon} />
                 </Button>
                 <p className="form-note">
-                  Use this on a trusted server or in your agent’s secret store.
-                  Never put it in frontend code.
+                  {keyTenantName
+                    ? `This key is bound to ${keyTenantName}. Deliver it through a secure channel, and store it on a trusted server. It will not be shown again.`
+                    : "Use this on a trusted server or in your agent’s secret store. Never put it in frontend code."}
                 </p>
                 <Button
                   variant="secondary"
                   onClick={() => {
+                    const tenantKey = Boolean(keyTenantId)
                     setDialog(null)
                     setSecret("")
-                    navigate(keyKind === "agent" ? "Agents" : "Developers")
+                    setKeyTenantId("")
+                    setKeyTenantName("")
+                    if (!tenantKey) navigate(keyKind === "agent" ? "Agents" : "Developers")
                   }}
                 >
                   Done
@@ -1489,13 +1871,15 @@ export default function Console() {
                   e.preventDefault()
                   const f = new FormData(e.currentTarget)
                   perform(async () => {
-                    const k = await action("create_key", {
+                    const k = await action<ApiResponse & { secret?: string }>("create_key", {
                       name: f.get("name"),
                       kind: keyKind,
                       scopes: permissionSets[permission],
                       max_amount: Math.round(Number(f.get("max")) * 100),
                       refund_budget: Math.round(Number(f.get("budget")) * 100),
+                      ...(keyTenantId ? { tenant_id: keyTenantId } : {}),
                     })
+                    if (typeof k.secret !== "string") throw new Error("The API key response was incomplete. Contact support.")
                     setSecret(k.secret)
                     toast.success("Key created")
                   })
@@ -1583,6 +1967,73 @@ export default function Console() {
             ))}
         </DialogContent>
       </Dialog>
+      <Dialog
+        open={merchantInvite !== null}
+        onOpenChange={(open) => {
+          if (!open) setMerchantInvite(null)
+        }}
+      >
+        <DialogContent className="agora-dialog sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Invite {merchantInvite?.business_name}</DialogTitle>
+            <DialogDescription>
+              This one-time link lets {merchantInvite?.email} set a password and authenticator. It expires {merchantInvite ? new Date(merchantInvite.expires_at).toLocaleString() : ""}. Share it privately; anyone with the link can claim this merchant account.
+            </DialogDescription>
+          </DialogHeader>
+          {merchantInvite && (
+            <div className="form-stack">
+              <div className="field">
+                <Label htmlFor="merchant-invite-url">One-time invite link</Label>
+                <Input id="merchant-invite-url" readOnly value={merchantInvite.invite_url} onFocus={(event) => event.currentTarget.select()} />
+              </div>
+              <p className="form-note">The link is shown once here. Copy it before closing this window; it is not emailed automatically.</p>
+              <Button onClick={() => copy(merchantInvite.invite_url)}>Copy invite link <HugeiconsIcon icon={Copy01Icon} aria-hidden="true" /></Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={registrationReview !== null}
+        onOpenChange={(open) => {
+          if (!open && !busy) setRegistrationReview(null)
+        }}
+      >
+        <DialogContent className="agora-dialog sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              {registrationReview?.decision === "approve"
+                ? `Approve ${registrationReview.registration.business_name}?`
+                : `Reject ${registrationReview?.registration.business_name ?? "this registration"}?`}
+            </DialogTitle>
+            <DialogDescription>
+              {registrationReview?.decision === "approve"
+                ? "This approves API access. It does not issue a key or create a login. Processor payments require the merchant’s own connected and verified provider account."
+                : "The merchant registration will be marked rejected. No API key or payment access will be issued."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="registration-confirm-actions">
+            <Button variant="secondary" disabled={busy} onClick={() => setRegistrationReview(null)}>Cancel</Button>
+            <Button
+              variant={registrationReview?.decision === "reject" ? "destructive" : "default"}
+              disabled={busy || !registrationReview}
+              onClick={() => {
+                const review = registrationReview
+                if (!review) return
+                perform(async () => {
+                  await action("review_registration", {
+                    registration_id: review.registration.id,
+                    decision: review.decision,
+                  })
+                  setRegistrationReview(null)
+                  toast.success(review.decision === "approve" ? "Merchant approved" : "Registration rejected")
+                })
+              }}
+            >
+              {busy ? "Saving…" : registrationReview?.decision === "approve" ? "Approve merchant" : "Reject registration"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
       <Sheet
         open={!!selected}
         onOpenChange={(open) => {
@@ -1643,16 +2094,31 @@ export default function Console() {
                       e.preventDefault()
                       const f = new FormData(e.currentTarget)
                       perform(async () => {
-                        await action("refund", {
+                        const result = await action<ApiResponse & { provider?: string; status?: string }>("refund", {
                           payment_id: selectedCurrent.id,
                           amount: Math.round(Number(f.get("amount")) * 100),
                           reason: f.get("reason"),
                         })
-                        toast.success("Refund completed")
+                        toast.success(
+                          result.provider === "stripe"
+                            ? result.status === "succeeded"
+                              ? "Stripe reports the refund succeeded."
+                              : "Refund submitted. Waiting for provider confirmation."
+                            : "Refund completed in test mode."
+                        )
                       })
                     }}
                   >
                     <h2>Issue a refund</h2>
+                    {(selectedCurrent as Payment & { provider?: string }).provider === "stripe" && !selectedCurrent.provider_mode ? (
+                      <p className="form-note" role="status">Stripe mode is unknown. Refunds are disabled until the payment mode can be verified.</p>
+                    ) : (
+                    <>
+                    {(selectedCurrent as Payment & { provider?: string }).provider === "stripe" && (
+                      <p className="form-note" role="status">
+                        Stripe {selectedCurrent.provider_mode} mode. The refund is sent to the same connected account; final status follows Stripe’s response and verified events.
+                      </p>
+                    )}
                     <div className="field">
                       <Label htmlFor="refund-amount">Amount · USD</Label>
                       <Input
@@ -1684,12 +2150,16 @@ export default function Console() {
                       />
                     </div>
                     <Button type="submit" disabled={busy}>
-                      {busy ? "Refunding…" : "Confirm refund"}
+                      {busy ? "Submitting…" : (selectedCurrent as Payment & { provider?: string }).provider === "stripe" ? "Submit Stripe refund" : "Confirm refund"}
                     </Button>
+                    </>
+                    )}
                   </form>
                 )}
               <p className="form-note mt-6">
-                Test mode record. No live funds have been collected or returned.
+                {(selectedCurrent as Payment & { provider?: string }).provider === "stripe"
+                  ? "Processor status is updated by verified provider events."
+                  : "Test mode record. No live funds have been collected or returned."}
               </p>
             </div>
           )}

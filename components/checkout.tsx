@@ -1,6 +1,6 @@
 "use client"
 import { useEffect, useState } from "react"
-import { Button } from "@/components/ui/button"
+import Link from "next/link"
 import { toast } from "sonner"
 export default function Checkout({ token }: { token: string }) {
   const [data, setData] = useState<{
@@ -8,18 +8,32 @@ export default function Checkout({ token }: { token: string }) {
     amount: number
     status: string
     id: string
+    provider: "sandbox" | "stripe"
+    provider_mode: "test" | "live" | null
+    checkout_url?: string
   } | null>(null)
   const [error, setError] = useState("")
   const [busy, setBusy] = useState(false)
+  const [reload, setReload] = useState(0)
   useEffect(() => {
     fetch(`/api/checkout/${token}`)
       .then(async (r) => {
-        const b: { error?: { message?: string }; product_name: string; amount: number; status: string; id: string } = await r.json()
+        const b: { error?: { message?: string }; product_name: string; amount: number; status: string; id: string; provider?: "sandbox" | "stripe"; provider_mode?: "test" | "live" | null; checkout_url?: string } = await r.json()
         if (!r.ok) throw new Error(b.error?.message || "Checkout is unavailable.")
-        setData(b)
+        const provider = b.provider || "sandbox"
+        if (provider === "stripe") {
+          if (!b.checkout_url) throw new Error("Hosted provider checkout is unavailable.")
+          const checkoutUrl = new URL(b.checkout_url)
+          if (checkoutUrl.protocol !== "https:" || !checkoutUrl.hostname.endsWith(".stripe.com")) {
+            throw new Error("The provider returned an invalid secure checkout address.")
+          }
+          window.location.assign(checkoutUrl.toString())
+          return
+        }
+        setData({ ...b, provider, provider_mode: b.provider_mode || null })
       })
       .catch((e) => setError(e.message))
-  }, [token])
+  }, [token, reload])
   async function simulate(outcome: string) {
     setBusy(true)
     try {
@@ -39,29 +53,43 @@ export default function Checkout({ token }: { token: string }) {
   }
   return (
     <main className="checkout-page">
-      <a className="wordmark" href="/">
+      <Link className="wordmark" href="/">
         agora<span>·</span>
-      </a>
-      <span className="sandbox-mark">Test mode</span>
+      </Link>
+      {data && (
+        <span className="sandbox-mark">
+          {data.provider === "stripe"
+            ? data.provider_mode
+              ? `Stripe ${data.provider_mode}`
+              : "Stripe mode unknown"
+            : "Test mode"}
+        </span>
+      )}
       {error ? (
         <>
           <h1>Checkout unavailable.</h1>
-          <p>{error}</p>
+          <p role="alert">{error}</p>
+          <button className="checkout-control" onClick={() => setReload((value) => value + 1)}>
+            Try again
+          </button>
         </>
       ) : !data ? (
-        <p>Loading your checkout…</p>
+          <p role="status" aria-live="polite">Loading your checkout…</p>
       ) : (
         <>
-          <p className="eyebrow">ACME STUDIO</p>
           <h1>
-            {data.status === "succeeded"
+            {data.status === "succeeded" && data.provider === "sandbox"
               ? "Payment simulated successfully."
-              : data.status === "failed"
+              : data.status === "failed" && data.provider === "sandbox"
                 ? "Payment declined."
                 : data.product_name}
           </h1>
           <p>
-            {data.status === "succeeded"
+            {data.provider === "stripe"
+              ? data.status === "pending"
+                ? "Payment status is waiting for confirmation from the payment provider. This page does not confirm payment. Check again later or return to the merchant."
+                : `The payment provider reports this payment as ${data.status}.`
+              : data.status === "succeeded"
               ? "Your simulated payment succeeded."
               : data.status === "failed"
                 ? "This simulated payment was declined. Create another checkout to try again."
@@ -74,25 +102,37 @@ export default function Checkout({ token }: { token: string }) {
             }).format(data.amount / 100)}
             <span>USD · {data.product_name}</span>
           </div>
-          {data.status === "pending" ? (
-            <div className="form-stack">
-              <Button disabled={busy} onClick={() => simulate("succeeded")}>
+          {data.status === "pending" && data.provider === "sandbox" ? (
+            <form
+              className="form-stack"
+              aria-label="Test payment outcome"
+              onSubmit={(event) => {
+                event.preventDefault()
+                const outcome = (event.nativeEvent as SubmitEvent).submitter?.getAttribute("value")
+                if (outcome === "succeeded" || outcome === "failed") {
+                  void simulate(outcome)
+                }
+              }}
+            >
+              <button type="submit" name="outcome" value="succeeded" className="checkout-control" disabled={busy}>
                 {busy ? "Processing…" : "Simulate successful payment"}
-              </Button>
-              <Button
+              </button>
+              <button
+                type="submit"
+                name="outcome"
+                value="failed"
+                className="checkout-control checkout-control-secondary"
                 disabled={busy}
-                variant="ghost"
-                onClick={() => simulate("failed")}
               >
                 Simulate decline
-              </Button>
-            </div>
+              </button>
+            </form>
           ) : (
-            <Button onClick={() => location.assign("/?view=Payments")}>
-              Back to payments
-            </Button>
+            <button className="checkout-control" onClick={() => location.assign("/?view=Payments")}>
+              {data.provider === "stripe" ? "Return to merchant" : "Back to payments"}
+            </button>
           )}
-          <p className="form-note">No live charge will be made.</p>
+          <p className="form-note">{data.provider === "stripe" ? "Payment status is finalized by verified provider events." : "No live charge will be made."}</p>
           <code>{data.id}</code>
         </>
       )}

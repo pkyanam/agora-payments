@@ -22,6 +22,12 @@ const endpoints = [
   ],
   [
     "POST",
+    "/api/v1/payments/:id/reconcile",
+    "Verify a stored hosted-checkout session with the provider.",
+    "payments:write",
+  ],
+  [
+    "POST",
     "/api/v1/refunds",
     "Refund or request human approval.",
     "refunds:write",
@@ -46,25 +52,28 @@ export default function Reference() {
       <h1>API reference</h1>
       <p className="reference-intro">
         REST API for applications and agents. All amounts are integer USD cents.
-        Test mode operations do not move real money.
+        This deployment uses Stripe test mode; its payments and refunds do not
+        move real money.
       </p>
       <section>
         <h2>Start with a key.</h2>
         <p>
-          Create a scoped key in Developers or Agents. Send it as{" "}
+          Create a scoped key in Developers or Access. Send it as{" "}
           <code>Authorization: Bearer ag_test_…</code>. Keys never belong in
-          browser code. Each key is restricted to its workspace.
+          browser code. Each key is restricted to its merchant workspace and
+          provider mode.
         </p>
         <pre>{`POST /api/v1/payments\nAuthorization: Bearer $AGORA_API_KEY\nIdempotency-Key: order-001\nContent-Type: application/json\n\n{ "product_id": "prod_studio", "customer": "Alex" }`}</pre>
         <p>
-          The response includes a relative <code>checkout_url</code>. Resolve it
-          against the API origin, then send the buyer there. The TypeScript SDK
-          does this for you. Test checkout permits explicit success/decline
-          simulation and never collects card details.
+          The response includes an absolute <code>checkout_url</code>. Send the
+          buyer there; it opens Stripe-hosted Checkout in this deployment’s
+          test mode. The app confirms payment only after a signed Stripe event
+          updates the payment record. The local test checkout, when configured,
+          simulates outcomes and never collects card details.
         </p>
       </section>
       <section>
-        <h2>Seven endpoints. One model.</h2>
+        <h2>Eight endpoints. One model.</h2>
         {endpoints.map(([method, path, description, scope]) => (
           <article className="endpoint" key={method + path}>
             <span>{method}</span>
@@ -113,14 +122,16 @@ export default function Reference() {
           List endpoints accept <code>?cursor=0&limit=25</code> with a maximum
           limit of 100. Responses include <code>data</code> and{" "}
           <code>next_cursor</code>. Events are ordered by insertion and include
-          type, actor, object ID and timestamp. Network webhook delivery is not
-          implemented yet.
+          type, actor, object ID and timestamp. Signed Stripe webhooks update
+          payment and refund state. The API event stream is polled separately;
+          this deployment does not configure merchant-directed outgoing webhooks.
         </p>
         <p>
           Payment states are <code>pending</code>, <code>succeeded</code>, and{" "}
           <code>failed</code>. Refunds are separate records; the payment’s{" "}
           <code>refunded</code> field tracks its cumulative refunded amount.
-          Sample records are marked with <code>sample: 1</code>.
+          Stripe refund status follows the processor response and verified
+          webhook events. Sample records are marked with <code>sample: 1</code>.
         </p>
       </section>
       <section>
@@ -136,11 +147,12 @@ export default function Reference() {
       <section>
         <h2>Your tools. Same API.</h2>
         <p>
-          Use the dependency-free TypeScript client at <code>sdk/agora.ts</code>
-          , or <code>node cli/agora.mjs --help</code>. Both are included
-          locally, not published packages. The CLI reads <code>AGORA_URL</code>{" "}
-          and <code>AGORA_API_KEY</code>, returns JSON, and exits nonzero on
-          errors.
+          The standalone Agora CLI is maintained separately from this payment
+          service. It reads <code>AGORA_URL</code> and{" "}
+          <code>AGORA_API_KEY</code>, returns JSON, and exits nonzero on errors.
+          Source and installation guidance are in the{" "}
+          <a href="https://github.com/pkyanam/agora-cli" target="_blank" rel="noreferrer">CLI repository</a>;
+          access follows that repository’s permissions.
         </p>
         <a className="reference-link" href="/openapi.json">
           Download the OpenAPI specification ↗

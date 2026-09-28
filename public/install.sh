@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="pkyanam/agora-payments"
+REPO="pkyanam/agora-cli"
+RAW_BASE="https://raw.githubusercontent.com/$REPO"
+APP_BASE="${AGORA_SITE_BASE:-https://agora-payments.vercel.app}"
+CLI_SHA256="b4ef90fafefeac6387ca28848332c99549881df97afcf9e5eda60f42e9548efe"
 MIN_NODE_MAJOR=20
 MIN_NODE_MINOR=9
 DEST_DIR="${AGORA_INSTALL_DIR:-${HOME:?Set HOME before installing}/.local/bin}"
@@ -23,7 +26,7 @@ esac
 mkdir -p "$DEST_DIR"
 DEST_DIR="$(cd "$DEST_DIR" && pwd -P)"
 DEST="$DEST_DIR/agora"
-MARKER='// Agora managed CLI (pkyanam/agora-payments)'
+MARKER='// Agora managed CLI (pkyanam/agora-cli)'
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agora-install.XXXXXX")"
 cleanup() { rm -rf "$TMP_DIR"; }
@@ -40,14 +43,38 @@ fi
 if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/cli/agora.mjs" ]]; then
   cp "$SCRIPT_DIR/cli/agora.mjs" "$SOURCE"
 else
-  if ! command -v gh >/dev/null 2>&1; then
-    printf '%s\n' 'This private installer needs GitHub CLI (gh) authenticated for pkyanam/agora-payments.' 'Install gh, run `gh auth login`, then retry the installer.' >&2
+  REF="${AGORA_REF:-main}"
+  FETCHED=0
+  PUBLIC_ARTIFACT=0
+  if command -v curl >/dev/null 2>&1 && curl --fail --silent --show-error --location "$APP_BASE/agora-cli.mjs" > "$SOURCE" 2>/dev/null; then
+    FETCHED=1
+    PUBLIC_ARTIFACT=1
+  elif command -v curl >/dev/null 2>&1 && curl --fail --silent --show-error --location "$RAW_BASE/$REF/cli/agora.mjs" > "$SOURCE" 2>/dev/null; then
+    FETCHED=1
+  fi
+  if (( FETCHED == 0 )) && command -v gh >/dev/null 2>&1; then
+    : > "$SOURCE"
+    if gh api --header 'Accept: application/vnd.github.raw' "repos/$REPO/contents/cli/agora.mjs?ref=$REF" > "$SOURCE"; then
+      FETCHED=1
+    fi
+  fi
+  if (( FETCHED == 0 )); then
+    printf '%s\n' 'Could not download Agora CLI. Confirm `gh auth status` can access pkyanam/agora-cli, or retry when the public installer is available.' >&2
     exit 1
   fi
-  REF="${AGORA_REF:-main}"
-  if ! gh api --header 'Accept: application/vnd.github.raw' "repos/$REPO/contents/cli/agora.mjs?ref=$REF" > "$SOURCE"; then
-    printf '%s\n' 'Could not download Agora CLI. Confirm `gh auth status` has access to pkyanam/agora-payments, then retry.' >&2
-    exit 1
+  if (( PUBLIC_ARTIFACT == 1 )); then
+    if command -v shasum >/dev/null 2>&1; then
+      ACTUAL_SHA256="$(shasum -a 256 "$SOURCE" | awk '{print $1}')"
+    elif command -v sha256sum >/dev/null 2>&1; then
+      ACTUAL_SHA256="$(sha256sum "$SOURCE" | awk '{print $1}')"
+    else
+      printf '%s\n' 'Cannot verify the public Agora CLI artifact: install shasum or sha256sum, then retry.' >&2
+      exit 1
+    fi
+    if [[ "$ACTUAL_SHA256" != "$CLI_SHA256" ]]; then
+      printf '%s\n' 'The public Agora CLI artifact failed its SHA-256 check. Nothing was installed.' >&2
+      exit 1
+    fi
   fi
 fi
 

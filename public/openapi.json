@@ -3,7 +3,7 @@
   "info": {
     "title": "Agora API",
     "version": "0.1.0",
-    "description": "Single-workspace USD payment acceptance simulator. No live acquiring connection. Amounts are integer cents."
+    "description": "Hosted Agora QA preview using Stripe test mode only. No live charges or payouts. Amounts are integer USD cents; provider account and payment mode are bound server-side to each merchant API key."
   },
   "servers": [
     {
@@ -945,13 +945,104 @@
           }
         }
       }
+    },
+    "/payments/{id}/reconcile": {
+      "post": {
+        "operationId": "paymentsReconcile",
+        "summary": "Reconcile a payment from its stored Stripe Checkout session",
+        "description": "Requires payments:write. Fetches only the Checkout session stored for this tenant and validates mode, amount, currency, session ID and metadata before updating state. The request body cannot select a tenant, account, or session.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current payment status and whether this call applied a reconciliation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "status",
+                    "reconciled"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "succeeded",
+                        "failed"
+                      ]
+                    },
+                    "reconciled": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or revoked key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or key-mode denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Payment not found in this workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Provider data does not match the stored payment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "securitySchemes": {
       "bearerAuth": {
         "type": "http",
-        "scheme": "bearer"
+        "scheme": "bearer",
+        "description": "Scoped merchant API key. The server pins the key to its merchant and provider mode; never send keys from browser code."
       }
     },
     "schemas": {
@@ -1030,7 +1121,7 @@
           },
           "checkout_url": {
             "type": "string",
-            "description": "Relative checkout URL returned on creation; resolve against origin."
+            "description": "Absolute Agora checkout wrapper URL returned on creation. In the hosted QA deployment it opens Stripe-hosted test Checkout."
           },
           "sample": {
             "type": "integer",
@@ -1042,6 +1133,24 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "sandbox",
+              "stripe"
+            ]
+          },
+          "provider_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "test",
+              "live",
+              null
+            ]
           }
         }
       },
@@ -1085,9 +1194,23 @@
             "description": "USD cents"
           },
           "status": {
+            "type": "string",
             "enum": [
+              "pending",
               "succeeded",
+              "failed",
               "requires_approval"
+            ]
+          },
+          "provider_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "test",
+              "live",
+              null
             ]
           }
         }

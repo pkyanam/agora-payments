@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, type FormEvent } from "react"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -47,13 +48,13 @@ export default function Register() {
   return (
     <main className="auth-page">
       <section className="auth-card" aria-labelledby="register-title">
-        <a className="wordmark" href="/" aria-label="Agora sign in">agora<span>·</span></a>
+        <Link className="wordmark" href="/" aria-label="Agora sign in">agora<span>·</span></Link>
         {registrationId ? (
           <div role="status" aria-live="polite">
             <h1 id="register-title">Request received</h1>
             <p>Your registration is pending review. Payment data and API access stay locked until approval.</p>
             <p className="registration-id">Request ID<br /><code>{registrationId}</code></p>
-            <p>We’ll follow up at the email address you provided. For help, contact <a className="inline-link" href="mailto:info@belweave.com">info@belweave.com</a>.</p>
+            <p>No email is sent automatically. Include this request ID when contacting <a className="inline-link" href="mailto:info@belweave.com">info@belweave.com</a> for status.</p>
           </div>
         ) : (
           <>
@@ -77,7 +78,7 @@ export default function Register() {
             </form>
           </>
         )}
-        <p className="auth-register">Already registered? <a className="inline-link" href="/">Sign in</a></p>
+        <p className="auth-register">Already registered? <Link className="inline-link" href="/">Sign in</Link></p>
         <p className="support-note">Support: <a className="inline-link" href="mailto:info@belweave.com">info@belweave.com</a></p>
       </section>
     </main>

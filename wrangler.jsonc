@@ -24,7 +24,9 @@
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": ["AgoraLedgerDO"]
+      "new_sqlite_classes": [
+        "AgoraLedgerDO"
+      ]
     }
   ],
   "secrets": {

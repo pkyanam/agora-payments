@@ -1,0 +1,46 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "agora-auth-qa",
+  "main": "workers/ledger/index.ts",
+  "compatibility_date": "2026-09-27",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "nodejs_compat_populate_process_env"
+  ],
+  "workers_dev": true,
+  "vars": {
+    "AGORA_PAYMENT_PROVIDER": "sandbox",
+    "AGORA_WORKSPACE_ID": "owner-workspace-e2e",
+    "AGORA_PUBLIC_ORIGIN": "https://agora-payments.vercel.app",
+    "AGORA_OWNER_EMAIL": "auth-fixture@agora.test"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AGORA_LEDGER",
+        "class_name": "AgoraLedgerDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "AgoraLedgerDO"
+      ]
+    }
+  ],
+  "secrets": {
+    "required": [
+      "AGORA_ADMIN_PASSWORD",
+      "AGORA_ADMIN_TOKEN",
+      "AGORA_MFA_ENCRYPTION_KEY"
+    ]
+  },
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  }
+}

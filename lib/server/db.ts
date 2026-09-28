@@ -19,6 +19,12 @@ CREATE TABLE IF NOT EXISTS owner_mfa(id TEXT PRIMARY KEY CHECK(id='owner'),encry
 CREATE TABLE IF NOT EXISTS auth_rate_limits(bucket TEXT PRIMARY KEY,attempts INTEGER NOT NULL,window_started INTEGER NOT NULL,locked_until INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS registrations(id TEXT PRIMARY KEY,business_name TEXT NOT NULL,owner_name TEXT NOT NULL,email TEXT NOT NULL,provider TEXT NOT NULL DEFAULT 'stripe',provider_account_id TEXT,status TEXT NOT NULL DEFAULT 'pending',tenant_id TEXT,created_at TEXT NOT NULL,reviewed_at TEXT,review_reason TEXT);
 CREATE TABLE IF NOT EXISTS tenants(id TEXT PRIMARY KEY,business_name TEXT NOT NULL,email TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',provider TEXT NOT NULL DEFAULT 'stripe',provider_account_id TEXT,created_at TEXT NOT NULL,approved_at TEXT);
+CREATE TABLE IF NOT EXISTS stripe_webhook_events(id TEXT PRIMARY KEY,livemode INTEGER NOT NULL,received_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS tenant_provider_accounts(tenant_id TEXT NOT NULL,provider TEXT NOT NULL,mode TEXT NOT NULL,account_id TEXT NOT NULL,status TEXT NOT NULL,charges_enabled INTEGER NOT NULL DEFAULT 0,payouts_enabled INTEGER NOT NULL DEFAULT 0,details_submitted INTEGER NOT NULL DEFAULT 0,capabilities TEXT NOT NULL DEFAULT '{}',connected_at TEXT NOT NULL,PRIMARY KEY(tenant_id,provider,mode),UNIQUE(provider,mode,account_id));
+CREATE TABLE IF NOT EXISTS provider_oauth_states(state_hash TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,provider TEXT NOT NULL,mode TEXT NOT NULL,redirect_uri TEXT NOT NULL,expires_at TEXT NOT NULL,used_at TEXT,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS merchant_invites(token_hash TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,email TEXT NOT NULL,expires_at TEXT NOT NULL,used_at TEXT,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS merchant_users(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,email TEXT NOT NULL,password_salt TEXT NOT NULL,password_hash TEXT NOT NULL,mfa_secret TEXT,mfa_confirmed INTEGER NOT NULL DEFAULT 0,last_counter INTEGER NOT NULL DEFAULT -1,recovery_hashes TEXT NOT NULL DEFAULT '[]',disabled INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(tenant_id,email));
+CREATE TABLE IF NOT EXISTS revoked_sessions(token_hash TEXT PRIMARY KEY,expires_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS payment_created ON payments(created_at);
 CREATE INDEX IF NOT EXISTS event_created ON events(created_at);
 `);
@@ -26,12 +32,24 @@ for(const [table,column,definition] of [
  ['products','tenant_id',"TEXT NOT NULL DEFAULT 'owner'"],
  ['payments','tenant_id',"TEXT NOT NULL DEFAULT 'owner'"],
  ['credentials','tenant_id',"TEXT NOT NULL DEFAULT 'owner'"],
+ ['credentials','provider_mode',"TEXT NOT NULL DEFAULT 'sandbox'"],
  ['refunds','tenant_id',"TEXT NOT NULL DEFAULT 'owner'"],
  ['approvals','tenant_id',"TEXT NOT NULL DEFAULT 'owner'"],
  ['events','tenant_id',"TEXT NOT NULL DEFAULT 'owner'"],
  ['journal','tenant_id',"TEXT NOT NULL DEFAULT 'owner'"],
+ ['payments','provider',"TEXT NOT NULL DEFAULT 'sandbox'"],
+ ['payments','provider_mode','TEXT'],
+ ['payments','provider_session_id','TEXT'],
+ ['payments','provider_checkout_url','TEXT'],
+ ['payments','provider_payment_intent','TEXT'],
+ ['payments','provider_account_id','TEXT'],
+ ['refunds','status',"TEXT NOT NULL DEFAULT 'succeeded'"],
+ ['refunds','provider_refund_id','TEXT'],
+ ['refunds','provider_mode','TEXT'],
+ ['refunds','credential_id','TEXT'],
 ] as const){const cols=db.prepare(`PRAGMA table_info(${table})`).all() as {name:string}[];if(!cols.some(c=>c.name===column))db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);}
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS tenant_email_unique ON tenants(email COLLATE NOCASE);");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS merchant_email_unique ON merchant_users(email COLLATE NOCASE);");
 export const now = () => new Date().toISOString();
 export const id = (prefix:string) => `${prefix}_${randomUUID().replaceAll('-','').slice(0,20)}`;
 export function one<T>(sql:string,...args:SQLInputValue[]):T|undefined { return db.prepare(sql).get(...args) as T|undefined; }
