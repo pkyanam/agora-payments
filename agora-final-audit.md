@@ -2,7 +2,7 @@
 
 Audit date: September 28, 2026. This records implemented behavior and evidence separately from production blockers. It is not a security certification.
 
-Current production: [agora-payments.vercel.app](https://agora-payments.vercel.app), deployment [agora-payments-4phapnb2c-preetham-kyanams-projects.vercel.app](https://agora-payments-4phapnb2c-preetham-kyanams-projects.vercel.app). Stripe TEST QA preview: [agora-payments-lfip9h55x-preetham-kyanams-projects.vercel.app](https://agora-payments-lfip9h55x-preetham-kyanams-projects.vercel.app).
+Current app source commit: `d4c9f84`. Production: [agora-payments.vercel.app](https://agora-payments.vercel.app), deployment [agora-payments-qeledujqq-preetham-kyanams-projects.vercel.app](https://agora-payments-qeledujqq-preetham-kyanams-projects.vercel.app). Stripe TEST QA preview: [agora-payments-lfip9h55x-preetham-kyanams-projects.vercel.app](https://agora-payments-lfip9h55x-preetham-kyanams-projects.vercel.app); this preview predates the final mobile sidebar status-text adjustment and installer hardening.
 
 ## Requirement status
 
@@ -33,6 +33,7 @@ Three separate authentication-fixture exposures occurred during implementation a
 - Hosted: QA Stripe test Checkout, webhook confirmation, partial refund/replay, and separate merchant auth/isolation flows were completed without real-money activity.
 - Read-only deployment probe after the final production deployment: production health returned `deployment: production`, `provider_status: setup_required`, and `checkout_enabled:false`; QA health returned `deployment: qa`, `provider_status: ready`, and `provider_mode:test`. Canonical Vercel API session is unauthenticated 200/no-store/DO storage; owner console is 401/no-store/DO storage. QA preview has the same session and console results from its separate Worker. The deployed CLI matched its pinned SHA-256 `3813c1e6…590180`.
 - Playwright layout-only QA returned `ok:true` for 30 route×viewport visits across Overview, Payments, Catalog, Agents, and Developers at 320, 375, 390, 640, 768, and 1280 CSS px. Explicit document/body measurements were 320/320 at 320px and 640/640 at 640px; no visible horizontal clipping appeared in the 320px screenshot, and the payment table kept its own horizontal scroller. The runner reports but does not assert exact width equality for every case, and this was not browser chrome zoom. Drawer default-closed/open focus-within passed; Escape/focus return/navigation-close remained unverified. Screenshots: [mobile](/Users/preetham/Documents/Codex/2026-09-27/let-s-build-our-our-payment/outputs/agora-mobile.png), [desktop](/Users/preetham/Documents/Codex/2026-09-27/let-s-build-our-our-payment/outputs/agora-desktop.png).
+- Final production source removes a focusable provider-status tooltip from the mobile drawer because it could consume Escape before the drawer. It passed typecheck, targeted lint, and production build, but runtime Escape dismissal/focus restoration was not rerun and remains unverified.
 - No live transaction was performed.
 
 ## Remaining external steps
