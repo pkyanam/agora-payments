@@ -1093,7 +1093,8 @@ export default function Console() {
                           />
                         </AreaChart>
                       </div> : <p className="chart-empty">No successful payments were created in this period.</p>}
-                      <table className="sr-only">
+                      <div className="accessible-chart-data">
+                      <table>
                         <caption>
                           Daily successful payments created in the last 28 UTC dates. Refunds are attributed to the date the payment was created.
                         </caption>
@@ -1123,6 +1124,7 @@ export default function Console() {
                           ))}
                         </tbody>
                       </table>
+                      </div>
                     </div>
                   </section>
                   <section className="small-stats">

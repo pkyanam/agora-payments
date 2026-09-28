@@ -2,6 +2,8 @@
 
 Audit date: September 28, 2026. This records implemented behavior and evidence separately from production blockers. It is not a security certification.
 
+Current production: [agora-payments.vercel.app](https://agora-payments.vercel.app), deployment [agora-payments-4phapnb2c-preetham-kyanams-projects.vercel.app](https://agora-payments-4phapnb2c-preetham-kyanams-projects.vercel.app). Stripe TEST QA preview: [agora-payments-lfip9h55x-preetham-kyanams-projects.vercel.app](https://agora-payments-lfip9h55x-preetham-kyanams-projects.vercel.app).
+
 ## Requirement status
 
 | Requirement | Evidence/status |
@@ -17,20 +19,24 @@ Audit date: September 28, 2026. This records implemented behavior and evidence s
 
 Owner and merchant access require password plus TOTP MFA. MFA secrets are encrypted at rest; recovery codes are hashed and one-use; TOTP counters prevent replay; sessions can be revoked. Merchant passwords use scrypt (`N=65,536, r=8, p=2`), with persistent rate limits before KDF work and a small serialized in-flight KDF cap. Cookie-authenticated writes check same-origin; cookies are HttpOnly, Secure in HTTPS/production, and use Lax for completed sessions and Strict for pending MFA stages. SQL values are parameterized. Webhooks are size-capped, HMAC/timestamp verified, and checked against mode, tenant, account, session, amount, and currency before applying state.
 
+A later development tool result exposed only the isolated Stripe TEST QA owner fixture's TOTP/recovery data and a TEST API key. The fixture was re-enrolled through the normal MFA flow, its signing token rotated, and all owner API keys revoked (two credential records, zero active). The QA ledger and TEST webhook were preserved; the one-time reset source was removed and normal source restored. The canonical owner and local owner were not changed. Full incident detail is in the launch-readiness document.
+
 The operator live-setup script is tested with mocked Stripe/Wrangler calls. It verifies the owner account ID and capabilities, creates or reuses only the exact configured live webhook, deploys a production fail-closed configuration before secret provisioning, then enables Stripe/live only in the final deploy. The script has not been run without the missing durable key and webhook setup. Its mock test makes no payment, refund, or payout API calls.
 
 No card numbers reach Agora because Checkout is hosted by Stripe. No PCI assessment, formal penetration test, SOC report, or compliance certification has been completed. The app is not a bank reconciliation or settlement/fee/tax accounting system; processor pricing and merchant-specific negotiated rates remain external to this verification.
 
-During implementation, QA/local authentication-encryption key material was inadvertently exposed in tool output. The affected encryption keys were rotated, stored MFA records were migrated and checked, previous-key fallbacks and affected sessions/tokens were removed, and no ledger state was reset. No Stripe API key, webhook signing secret, or card data was exposed. The user was informed.
+During implementation, QA/local authentication-encryption key material was inadvertently exposed in tool output. The affected encryption keys were rotated, stored MFA records were migrated and checked, previous-key fallbacks and affected sessions/tokens were removed, and no ledger state was reset. A later, separate exposure involved only the Stripe QA owner's TOTP seed, recovery codes, and test API-key fixture: the QA owner password and signing token were rotated, the QA owner MFA/recovery set was reset and re-enrolled through the normal flow, and both owner QA key records were revoked. The QA ledger, provider configuration, and TEST webhook were preserved; production/local owner data was not affected. No Stripe API credential, live webhook secret, or card data was exposed. The user was informed.
 
 ## Verification
 
 - Local: `bun run typecheck`, `bun run lint -- --quiet`, and 32 tests passed, including auth/KDF rate and concurrency, tenant/mode isolation, financial aggregation, refund replay, webhook verification, and operator-script safety.
 - Hosted: QA Stripe test Checkout, webhook confirmation, partial refund/replay, and separate merchant auth/isolation flows were completed without real-money activity.
-- Read-only deployment probe after final deploy: production health returned `deployment: production`, `provider_status: setup_required`, and `checkout_enabled:false`; QA health returned `deployment: qa`, `provider_status: ready`, and `provider_mode:test`. Canonical Vercel API session is unauthenticated 200/no-store/DO storage; owner console is 401/no-store/DO storage. QA preview has the same session and console results from its separate Worker. The deployed CLI matched its pinned SHA-256 `3813c1e6…590180`.
-- Mobile-device/browser verification was not performed. No live transaction was performed.
+- Read-only deployment probe after the final production deployment: production health returned `deployment: production`, `provider_status: setup_required`, and `checkout_enabled:false`; QA health returned `deployment: qa`, `provider_status: ready`, and `provider_mode:test`. Canonical Vercel API session is unauthenticated 200/no-store/DO storage; owner console is 401/no-store/DO storage. QA preview has the same session and console results from its separate Worker. The deployed CLI matched its pinned SHA-256 `3813c1e6…590180`.
+- Playwright layout-only QA returned `ok:true` for 30 route×viewport visits across Overview, Payments, Catalog, Agents, and Developers at 320, 375, 390, 640, 768, and 1280 CSS px. Explicit document/body measurements were 320/320 at 320px and 640/640 at 640px; no visible horizontal clipping appeared in the 320px screenshot, and the payment table kept its own horizontal scroller. The runner reports but does not assert exact width equality for every case, and this was not browser chrome zoom. Drawer default-closed/open focus-within passed; Escape/focus return/navigation-close remained unverified. Screenshots: [mobile](/Users/preetham/Documents/Codex/2026-09-27/let-s-build-our-our-payment/outputs/agora-mobile.png), [desktop](/Users/preetham/Documents/Codex/2026-09-27/let-s-build-our-our-payment/outputs/agora-desktop.png).
+- No live transaction was performed.
 
 ## Remaining external steps
 
 1. Provision a durable, mode-matched live Stripe API credential and persistent live webhook signing secret, then deploy and verify the signed webhook path without making a real charge. The restricted key is preferred when its required permissions are available; a mode-valid standard key is also supported if securely provisioned.
 2. Obtain Stripe Standard Connect platform approval/onboarding, then have each pilot merchant authorize its own account. Until then, merchant live payment acceptance remains disabled.
+3. Before a commercial or public source release, confirm the license for the vendored Dither Kit registry components with the maintainer. The official registry manifest has no component license field and the repository has no LICENSE file; the separate npm CLI package’s MIT metadata does not establish the chart-source license. Attribution and upstream version/source are recorded in `components/dither-kit/README.md`.
