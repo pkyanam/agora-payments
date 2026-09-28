@@ -171,6 +171,9 @@ if ! vercel project inspect "$UI_PROJECT" --json --yes >/dev/null 2>&1; then
   echo "Creating separate Vercel community UI project ${UI_PROJECT}…"
   vercel project add "$UI_PROJECT" >/dev/null
 fi
+# Projects created with `vercel project add` have no framework preset. Set the
+# expected Next.js builder explicitly so the production alias serves the app.
+vercel project update "$UI_PROJECT" --framework nextjs --node-version 24.x --yes >/dev/null
 vercel link --cwd "$DEPLOY_DIR" --project "$UI_PROJECT" --yes >/dev/null
 vercel env add AGORA_API_ORIGIN production --value "$WORKER_URL" --force --yes --project "$UI_PROJECT" --cwd "$DEPLOY_DIR" >/dev/null
 echo "Deploying the separate Vercel UI project ${UI_PROJECT}…"
