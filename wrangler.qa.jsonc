@@ -9,8 +9,9 @@
   ],
   "workers_dev": true,
   "vars": {
+    "AGORA_DEPLOYMENT_ENV": "qa",
     "AGORA_PAYMENT_PROVIDER": "stripe",
-    "AGORA_PUBLIC_ORIGIN": "https://agora-payments.vercel.app",
+    "AGORA_PUBLIC_ORIGIN": "https://agora-payments-dexqvrthp-preetham-kyanams-projects.vercel.app",
     "AGORA_OWNER_EMAIL": "fixture-owner@agora.test",
     "AGORA_STRIPE_MODE": "test"
   },

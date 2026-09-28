@@ -1533,6 +1533,15 @@ body [data-slot="badge"] {
   color: #333;
   font-size: 15px;
 }
+.provider-setup-alert {
+  padding: 14px 16px;
+  border-radius: 6px;
+  background: #f2f2f2;
+  color: #171717;
+}
+.provider-setup-alert h2 {
+  font-weight: 600;
+}
 @media (max-width: 520px) {
   .merchant-provider-panel {
     align-items: flex-start;

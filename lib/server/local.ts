@@ -47,3 +47,5 @@ export const handleStripeWebhook=service.handleStripeWebhook;
 export const snapshot=service.snapshot;
 export { ApiError, bodyOf, setSessionCookie, requireSameOrigin, responseError, requireScope, requireProviderMode, scopes } from './service';
 export { setMfaCookie } from './admin-auth';
+
+export const paymentProviderReadiness=service.paymentProviderReadiness;

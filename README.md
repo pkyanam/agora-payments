@@ -18,7 +18,7 @@ The installer places `agora` in `~/.local/bin` (or `$AGORA_INSTALL_DIR`), verifi
 
 ## What Agora does today
 
-Agora provides a hosted Checkout, a versioned REST API, and a standalone CLI for products, payments, events, and refunds. The current public deployment is an isolated Stripe **test-mode** preview. Stripe's official test card can be used there; test transactions do not move money. Live charges and payouts are disabled. New merchant registrations require review, and processor access requires each merchant's own approved, connected account.
+Agora provides a hosted Checkout, a versioned REST API, and a standalone CLI for products, payments, events, refunds, and hosted-checkout reconciliation. The canonical production deployment is connected to the clean owner environment and currently reports **Setup required**. Payment creation is disabled until the required Stripe credentials and signed webhook are configured and verified. There is no simulator fallback on production. The isolated Stripe test QA preview is separate; its data and test payments are not part of the canonical workspace. Live acceptance remains blocked.
 
 ## Run the app locally
 
@@ -29,7 +29,7 @@ bun install
 portless agora bun run dev
 ```
 
-Open [https://agora-payments.vercel.app](https://agora-payments.vercel.app) for the hosted test preview. For local development, open [http://agora.localhost](http://agora.localhost) when the local preview proxy is running, or use the loopback URL printed by Next.js. The local database is stored under `.data/` and stays out of Git. Copy `.env.example` to `.env.local` only if local owner sign-in is configured; do not commit environment files or paste secrets into support messages.
+Open [https://agora-payments.vercel.app](https://agora-payments.vercel.app) for the canonical workspace. Its current provider state disables payment creation; do not attempt live Checkout until the dashboard reports the provider is ready. For local development, open [http://agora.localhost](http://agora.localhost) when the local preview proxy is running, or use the loopback URL printed by Next.js. The local database is stored under `.data/` and stays out of Git. Copy `.env.example` to `.env.local` only if local owner sign-in is configured; do not commit environment files or paste secrets into support messages.
 
 ## Use the API or CLI
 
@@ -37,15 +37,19 @@ The CLI reads its URL and merchant API key from environment variables. It does n
 
 ```bash
 export AGORA_URL='https://agora-payments.vercel.app'
-export AGORA_API_KEY='your-merchant-api-key'
+printf 'Agora API key: ' >&2
+read -r -s AGORA_API_KEY
+printf '\n' >&2
+export AGORA_API_KEY
 agora products list
 agora products create --name 'Studio license' --amount 4900 --idempotency-key product-studio-v1
-agora payments create --product prod_... --customer 'Alex' --idempotency-key order-001
+agora payments create --product prod_... --customer 'Alex' --idempotency-key order-001  # only after provider readiness
 agora payments get --id pay_...
+agora payments reconcile --id pay_...
 agora refunds create --payment pay_... --amount 4900 --reason 'Customer request' --idempotency-key refund-001
 ```
 
-Amounts are integer cents: `4900` means `$49.00`. Give each mutation a stable idempotency key and reuse it when retrying the same request. API keys are shown once; store them in a secret manager or a short-lived shell environment, never in source control. The CLI supports product, payment, refund, and event API operations; it does not accept card details or decide the provider mode. In the hosted preview all provider traffic is Stripe test mode; never use a real card or treat test results as money movement.
+Amounts are integer cents: `4900` means `$49.00`. Use a unique idempotency key for each new create or refund and reuse it only when retrying the same request. Payment reconciliation is safe to repeat and does not require a key. API keys are shown once; store them in a secret manager or a short-lived shell environment, never in source control. The server selects the mode pinned to each key. A `pending` refund still awaits provider confirmation, and `requires_approval` is only a request. Do not use the payment or refund commands against the canonical workspace until its readiness status is **Ready** and the merchant’s own provider account is verified.
 
 Use `agora --help` for the full command list. The versioned REST API is documented in the Developers section of the console and at `/api-reference`.
 
@@ -63,4 +67,4 @@ bun run typecheck
 bun test
 ```
 
-The web app runs on Next.js 16; the hosted API runs on a Cloudflare Worker and SQLite Durable Object. The current Vercel deployment routes to a separate QA store and Stripe test credentials. It is a test preview, not a production money-processing service.
+The web app runs on Next.js 16; the hosted API runs on a Cloudflare Worker and SQLite Durable Object. The canonical deployment is not currently enabled for live payment creation. The separate QA store uses Stripe test credentials and does not establish live readiness.

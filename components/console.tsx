@@ -115,9 +115,13 @@ const icons = [Home03Icon, CreditCardIcon, PackageIcon, AiBrain01Icon, CodeIcon]
 const keyModeLabel = (mode?: "sandbox" | "test" | "live") =>
   mode === "test" ? "Stripe test" : mode === "live" ? "Stripe live" : mode === "sandbox" ? "Sandbox" : "Mode unavailable"
 const workspaceKeyModeLabel = (data: Snapshot | null) =>
-  data?.mode === "stripe"
+  data?.provider_status === "setup_required"
     ? keyModeLabel(data.provider_mode)
-    : "Sandbox"
+    : data?.provider_status === "sandbox"
+      ? "Sandbox"
+      : data?.mode === "stripe"
+        ? keyModeLabel(data.provider_mode)
+        : "Mode unavailable"
 const permissionSets = {
   read: ["products:read", "payments:read", "events:read"],
   payments: ["products:read", "payments:read", "payments:write", "events:read"],
@@ -613,9 +617,9 @@ export default function Console() {
     setDialog("key")
   }
   const pending = data?.approvals.filter((a) => a.status === "pending") || []
-  const paid = data?.payments.filter((p) => p.status === "succeeded") || []
-  const volume = paid.reduce((n, p) => n + p.amount, 0)
-  const refunded = paid.reduce((n, p) => n + p.refunded, 0)
+  const activity = data?.activity
+  const volume = activity?.gross_amount
+  const refunded = activity?.refunded_amount
   const filtered =
     data?.payments.filter(
       (p) =>
@@ -628,24 +632,33 @@ export default function Console() {
   const selectedCurrent = selected
     ? data?.payments.find((p) => p.id === selected.id) || selected
     : null
-  const chartData = Array.from({ length: 28 }, (_, i) => {
-    const now = new Date()
-    const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
-    day.setUTCDate(day.getUTCDate() - 27 + i)
-    const dayKey = day.toISOString().slice(0, 10)
-    const amount = paid
-      .filter((payment) => {
-        return new Date(payment.created_at).toISOString().slice(0, 10) === dayKey
-      })
-      .reduce((total, payment) => total + payment.amount, 0)
-    const label = date(day.toISOString())
-    return { day, amount, label }
-  })
+  const merchantCheckoutReady = authRole !== "merchant" ||
+    data?.provider_status === "sandbox" ||
+    Boolean(
+      merchantProvider?.status === "connected" &&
+      merchantProvider.charges_enabled &&
+      merchantProvider.mode === data?.provider_mode,
+    )
+  const checkoutAvailable = data?.checkout_enabled === true && merchantCheckoutReady
+  const keyIssuanceAvailable = data?.provider_status === "sandbox" || data?.provider_status === "ready"
+  const keyIssuanceUnavailableMessage = "API key issuance is unavailable until the workspace owner finishes provider setup. No key was created."
+  const checkoutUnavailableMessage = data?.provider_status === "setup_required"
+    ? "Checkout setup is required. Payment creation is disabled until the workspace owner configures the required Stripe credentials and verified webhook. No simulator fallback is active."
+    : authRole === "merchant" && !merchantCheckoutReady
+      ? "This merchant’s Stripe account is not connected and verified in the active mode. Connect it before creating a payment."
+      : "Payment creation is disabled because provider readiness has not been confirmed. Ask the workspace owner to check setup."
   let cumulative = 0
-  const volumeSeries = chartData.map((day) => ({
-    ...day,
-    total: (cumulative += day.amount),
-  }))
+  const volumeSeries = (activity?.daily || []).map((day) => {
+    const dateUtc = new Date(`${day.date}T00:00:00.000Z`)
+    return {
+      day: dateUtc,
+      label: date(day.date),
+      amount: day.gross_amount,
+      successfulPayments: day.successful_payments,
+      refunded: day.refunded_amount,
+      total: (cumulative += day.gross_amount),
+    }
+  })
   const status = (p: Payment) =>
     p.refunded === p.amount
       ? "Refunded"
@@ -724,7 +737,7 @@ export default function Console() {
   const code = {
     typescript: `const response = await fetch("${typeof location !== "undefined" ? location.origin : "https://agora.example.com"}/api/v1/payments", {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGORA_API_KEY}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": "order-001",\n  },\n  body: JSON.stringify({ product_id: "${data?.products[0]?.id || "prod_studio"}" }),\n});\n\nif (!response.ok) throw new Error(await response.text());\nconst payment = await response.json();\n// Redirect the customer to the returned hosted checkout URL.\nconsole.log(payment.checkout_url);`,
     curl: `curl -X POST "$AGORA_URL/api/v1/payments" \\\n  -H "Authorization: Bearer $AGORA_API_KEY" \\\n  -H "Idempotency-Key: order-001" \\\n  -H "Content-Type: application/json" \\\n  -d '{"product_id":"${data?.products[0]?.id || "prod_studio"}"}'`,
-    cli: `export AGORA_URL="${typeof location !== "undefined" ? location.origin : "https://agora.example.com"}"\nexport AGORA_API_KEY="your-test-key"\n\nagora products list\nagora payments create \\\n  --product ${data?.products[0]?.id || "prod_studio"} \\\n  --idempotency-key order-001\n\n# Install instructions: github.com/pkyanam/agora-cli`,
+    cli: `export AGORA_URL="${typeof location !== "undefined" ? location.origin : "https://agora.example.com"}"\nexport AGORA_API_KEY="your-mode-bound-key"\n\nagora products list\nagora payments create \\\n  --product ${data?.products[0]?.id || "prod_studio"} \\\n  --idempotency-key order-001\n\nagora payments reconcile --id pay_…\n\n# Install (Node.js 20.9+):\ncurl -fsSL https://agora-payments.vercel.app/install.sh | bash`,
   }
   const renderSidebar = (mobile = false) => (
     <aside
@@ -775,13 +788,17 @@ export default function Console() {
       </nav>
       <div className="sidebar-bottom">
         <Tooltip>
-          <TooltipTrigger render={<span className="sandbox-mark" tabIndex={0} role="note" aria-label={data?.mode === "stripe" ? `Stripe ${data.provider_mode || "mode unknown"}` : "Test mode"} />}>{data?.mode === "stripe" ? data.provider_mode ? `Stripe ${data.provider_mode}` : "Stripe mode unknown" : "Test mode"}</TooltipTrigger>
+          <TooltipTrigger render={<span className="sandbox-mark" tabIndex={0} role="note" aria-label={data?.provider_status === "setup_required" ? "Payment setup required" : data?.provider_status === "sandbox" ? "Test mode" : data?.mode === "stripe" ? `Stripe ${data.provider_mode || "mode unavailable"}` : "Provider mode unavailable"} />}>{data?.provider_status === "setup_required" ? "Setup required" : data?.provider_status === "sandbox" ? "Test mode" : data?.mode === "stripe" ? data.provider_mode ? `Stripe ${data.provider_mode}` : "Mode unavailable" : "Mode unavailable"}</TooltipTrigger>
           <TooltipContent>
-            {data?.mode === "stripe"
+            {data?.provider_status === "setup_required"
+              ? "Payment creation is disabled until required Stripe credentials and a verified webhook are configured. No simulator fallback is active."
+              : data?.provider_status === "sandbox"
+                ? "Explicit test simulation only. No live funds move."
+                : data?.mode === "stripe"
               ? data.provider_mode
                 ? `Payments use the configured Stripe ${data.provider_mode} account. Payment status follows verified provider events.`
                 : "The payment provider mode is unavailable. Verify configuration before creating a payment."
-              : "Test transactions only. No live funds move."}
+              : "Provider readiness has not been confirmed. Payment creation is unavailable."}
           </TooltipContent>
         </Tooltip>
         <a className="quiet-link" href="/api-reference" aria-label="API reference">
@@ -1005,6 +1022,16 @@ export default function Console() {
             </div>
           ) : (
             <>
+              {data.provider_status === "setup_required" && (
+                <section className="merchant-provider-panel provider-setup-alert" role="status" aria-labelledby="provider-setup-title">
+                  <div>
+                    <h2 id="provider-setup-title">Checkout setup required</h2>
+                    <p>
+                      Payment creation is disabled until the workspace owner configures the required Stripe credentials and verifies the webhook. This deployment has no simulator fallback.
+                    </p>
+                  </div>
+                </section>
+              )}
               {view === "Overview" && (
                 <>
                   <section className="page-heading">
@@ -1019,26 +1046,31 @@ export default function Console() {
                   <section className="overview-volume">
                     <div>
                       <div className="section-label">
-                        Payment volume <span>Last 28 days</span>
+                        Gross processed <span>Successful payments created · 28 UTC days · before provider fees</span>
                       </div>
                       <div className="hero-number">
-                        {money(volume).split(".")[0]}
-                        <span>.{money(volume).split(".")[1]}</span>
+                        {volume === undefined ? (
+                          "Unavailable"
+                        ) : (
+                          <>
+                            {money(volume).split(".")[0]}
+                            <span>.{money(volume).split(".")[1]}</span>
+                          </>
+                        )}
                       </div>
                       <p className="subtle">
-                        {paid.length} successful payments{" "}
-                        {paid.some((payment) => payment.sample) && (
-                          <><span className="inline-dot">·</span> Includes sample activity</>
-                        )}
+                        {activity?.successful_payments ?? "Unavailable"} successful payments{" "}
                         <span className="inline-dot">·</span> UTC
                       </p>
-                      {volumeSeries.some((day) => day.amount > 0) ? <div className="volume-chart">
+                      {!activity ? (
+                        <p className="chart-empty" role="status">Payment activity is unavailable.</p>
+                      ) : volumeSeries.some((day) => day.amount > 0) ? <div className="volume-chart">
                         <AreaChart
                           data={volumeSeries}
                           config={{
-                            total: { label: "Payment volume", color: "grey" },
+                            total: { label: "Gross processed amount", color: "grey" },
                           }}
-                          ariaLabel="Cumulative successful payment volume over the last 28 days. Exact daily amounts are available in the accessible table after the chart."
+                          ariaLabel="Cumulative gross amount from successful payments created in the last 28 UTC dates, before provider fees. Exact daily counts, amounts, and refunds attributed to those payments are available in the accessible table after the chart."
                           animate={false}
                           bloom="off"
                           className="dither-area-chart"
@@ -1060,17 +1092,18 @@ export default function Console() {
                             valueFormatter={(value) => money(value)}
                           />
                         </AreaChart>
-                      </div> : <p className="chart-empty">No successful payments in the last 28 days.</p>}
+                      </div> : <p className="chart-empty">No successful payments were created in this period.</p>}
                       <table className="sr-only">
                         <caption>
-                          Daily payments and cumulative payment volume for the
-                          last 28 UTC dates
+                          Daily successful payments created in the last 28 UTC dates. Refunds are attributed to the date the payment was created.
                         </caption>
                         <thead>
                           <tr>
                             <th scope="col">Date</th>
-                            <th scope="col">Successful payments</th>
-                            <th scope="col">Cumulative payment volume</th>
+                            <th scope="col">Successful payment count</th>
+                            <th scope="col">Gross processed</th>
+                            <th scope="col">Cumulative gross processed</th>
+                            <th scope="col">Refunded on these payments</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1082,8 +1115,10 @@ export default function Console() {
                                   timeZone: "UTC",
                                 })}
                               </th>
+                              <td>{day.successfulPayments}</td>
                               <td>{money(day.amount)}</td>
                               <td>{money(day.total)}</td>
+                              <td>{money(day.refunded)}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -1092,12 +1127,12 @@ export default function Console() {
                   </section>
                   <section className="small-stats">
                     <div>
-                      <span>Net payments</span>
-                      <strong>{money(volume - refunded)}</strong>
+                      <span>Net after refunds</span>
+                      <strong>{volume === undefined || refunded === undefined ? "Unavailable" : money(volume - refunded)}</strong>
                     </div>
                     <div>
-                      <span>Refunded</span>
-                      <strong>{money(refunded)}</strong>
+                      <span>Refunded on these payments</span>
+                      <strong>{refunded === undefined ? "Unavailable" : money(refunded)}</strong>
                     </div>
                     <div>
                       <span>Active agents</span>
@@ -1113,6 +1148,9 @@ export default function Console() {
                       </strong>
                     </div>
                   </section>
+                  <p className="subtle finance-note">
+                    These totals do not include provider fees or payout timing and are not an available bank balance.
+                  </p>
                   <section className="recent">
                     <div className="section-heading">
                       <h2>Recent payments</h2>
@@ -1675,13 +1713,17 @@ export default function Console() {
             </DialogTitle>
             <DialogDescription>
               {dialog === "payment"
-                ? data?.mode === "stripe"
-                  ? data.provider_mode
-                    ? `A hosted checkout will open with the configured Stripe ${data.provider_mode} account. Payment status follows provider confirmation.`
-                    : "Provider mode is unavailable. Check configuration before creating a payment."
-                  : "Test mode checkout. No live charge will be made."
+                ? !checkoutAvailable
+                  ? checkoutUnavailableMessage
+                  : data?.provider_status === "sandbox"
+                    ? "Explicit test simulation only. No live charge will be made."
+                    : data?.provider_mode
+                      ? `A hosted checkout will open with the configured Stripe ${data.provider_mode} account. Payment status follows verified provider events.`
+                      : "Provider mode is unavailable. Check configuration before creating a payment."
                 : dialog === "product"
-                  ? "Set a fixed price in USD."
+                ? "Set a fixed price in USD."
+                  : !secret && !keyIssuanceAvailable
+                    ? keyIssuanceUnavailableMessage
                   : secret
                     ? `Copy this ${workspaceKeyModeLabel(data)} key now. It will not be shown again. Keys remain bound to this mode; create another key if the workspace changes modes. Share it through a secure channel.`
                     : keyTenantName
@@ -1721,6 +1763,8 @@ export default function Console() {
                   Copy checkout link
                 </Button>
               </div>
+            ) : !checkoutAvailable ? (
+              <p className="form-note" role="status">{checkoutUnavailableMessage}</p>
             ) : (
               <form
                 className="form-stack"
@@ -1864,6 +1908,8 @@ export default function Console() {
                   Done
                 </Button>
               </div>
+            ) : !keyIssuanceAvailable ? (
+              <p className="form-note" role="status">{keyIssuanceUnavailableMessage}</p>
             ) : (
               <form
                 className="form-stack"
@@ -2087,7 +2133,11 @@ export default function Console() {
                 )}
               {selectedCurrent.status === "succeeded" &&
                 selectedCurrent.refunded < selectedCurrent.amount && (
-                  <form
+                  selectedCurrent.provider === "stripe" && data?.provider_status === "setup_required" ? (
+                    <p className="form-note" role="status">
+                      Refund actions are unavailable until Stripe setup is complete. No local refund record was created.
+                    </p>
+                  ) : <form
                     className="form-stack refund-form"
                     key={selectedCurrent.refunded}
                     onSubmit={(e) => {

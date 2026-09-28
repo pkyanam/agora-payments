@@ -52,24 +52,26 @@ export default function Reference() {
       <h1>API reference</h1>
       <p className="reference-intro">
         REST API for applications and agents. All amounts are integer USD cents.
-        This deployment uses Stripe test mode; its payments and refunds do not
-        move real money.
+        The workspace shows the active provider status. Payment creation fails
+        closed until the configured provider and webhook are ready; production
+        does not fall back to simulated payments.
       </p>
       <section>
         <h2>Start with a key.</h2>
         <p>
-          Create a scoped key in Developers or Access. Send it as{" "}
-          <code>Authorization: Bearer ag_test_…</code>. Keys never belong in
-          browser code. Each key is restricted to its merchant workspace and
-          provider mode.
+          Create a scoped, mode-bound key in Developers or Access. Send it as{" "}
+          <code>Authorization: Bearer $AGORA_API_KEY</code>. Keys never belong
+          in browser code. Each key is restricted to its merchant workspace
+          and provider mode.
         </p>
         <pre>{`POST /api/v1/payments\nAuthorization: Bearer $AGORA_API_KEY\nIdempotency-Key: order-001\nContent-Type: application/json\n\n{ "product_id": "prod_studio", "customer": "Alex" }`}</pre>
         <p>
           The response includes an absolute <code>checkout_url</code>. Send the
-          buyer there; it opens Stripe-hosted Checkout in this deployment’s
-          test mode. The app confirms payment only after a signed Stripe event
-          updates the payment record. The local test checkout, when configured,
-          simulates outcomes and never collects card details.
+          buyer there when provider readiness is confirmed; it opens hosted
+          Checkout in the configured provider mode. The app confirms payment
+          only after a signed Stripe event updates the payment record. An
+          explicitly configured sandbox may simulate outcomes and never
+          collects card details.
         </p>
       </section>
       <section>
@@ -88,11 +90,15 @@ export default function Reference() {
       <section>
         <h2>Retries that don’t repeat the money.</h2>
         <p>
-          Every POST requires an <code>Idempotency-Key</code>. Repeat the same
+          Create and refund POSTs require an <code>Idempotency-Key</code>. Repeat the same
           key and JSON payload to retrieve the original result. Reusing it with
           changed data returns 409. Keys are scoped to the authenticated
           credential and endpoint. If a request times out, keep the same key; do
           not assume failure or generate a new operation.
+        </p>
+        <p>
+          Payment reconciliation uses POST but is safe to repeat and does not
+          create another payment, so it does not require an idempotency key.
         </p>
         <p>
           Revoked keys cannot replay past requests. Idempotency records are

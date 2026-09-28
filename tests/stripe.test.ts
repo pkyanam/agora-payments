@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { createStripeCheckout, retrieveStripeCheckout, verifyStripeWebhook } from '../lib/server/stripe';
+import { createStripeCheckout, retrieveStripeCheckout, stripeApiKeyMatchesMode, verifyStripeWebhook } from '../lib/server/stripe';
 
 const checkout={amount:2500,currency:'usd' as const,productName:'Studio access',paymentId:'pay_test_1',tenantId:'owner',successUrl:'https://agora.example/checkout/complete',cancelUrl:'https://agora.example/checkout/cancel',idempotencyKey:'agora:payment:one'};
 
@@ -11,6 +11,13 @@ await test('Stripe Checkout is account-scoped by the merchant secret and uses pr
  assert.equal(session.id,'cs_test_1');assert.equal(request?.headers.get('idempotency-key'),checkout.idempotencyKey);
  const body=new URLSearchParams(await request!.text());assert.equal(body.get('metadata[agora_tenant_id]'),'owner');assert.equal(body.get('line_items[0][price_data][unit_amount]'),'2500');
  assert.equal(request?.headers.get('authorization'),'Bearer sk_test_example123');
+});
+
+await test('restricted API keys are mode checked and permission errors remain actionable',async()=>{
+ assert.equal(stripeApiKeyMatchesMode('rk_test_restricted123','test'),true);assert.equal(stripeApiKeyMatchesMode('rk_live_restricted123','test'),false);assert.equal(stripeApiKeyMatchesMode('sk_live_secret123','live'),true);
+ let request:Request|undefined;const session=await createStripeCheckout('rk_test_restricted123',checkout,async(input,init)=>{request=new Request(input,init);return Response.json({id:'cs_test_restricted',url:'https://checkout.stripe.com/c/restricted',status:'open'});});assert.equal(session.id,'cs_test_restricted');assert.equal(request?.headers.get('authorization'),'Bearer rk_test_restricted123');
+ await assert.rejects(()=>createStripeCheckout('rk_test_restricted123',checkout,async()=>new Response('{}',{status:403})),(e:unknown)=>e instanceof Error&&'code'in e&&e.code==='provider_permission_denied'&&'status'in e&&e.status===403);
+ await assert.rejects(()=>retrieveStripeCheckout('rk_test_restricted123','cs_test_restricted',undefined,async()=>new Response('{}',{status:403})),(e:unknown)=>e instanceof Error&&'code'in e&&e.code==='provider_permission_denied'&&'status'in e&&e.status===403);
 });
 
 await test('Stripe network uncertainty is surfaced for same-key retry and no fake success',async()=>{

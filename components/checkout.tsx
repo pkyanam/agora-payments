@@ -20,7 +20,12 @@ export default function Checkout({ token }: { token: string }) {
       .then(async (r) => {
         const b: { error?: { message?: string }; product_name: string; amount: number; status: string; id: string; provider?: "sandbox" | "stripe"; provider_mode?: "test" | "live" | null; checkout_url?: string } = await r.json()
         if (!r.ok) throw new Error(b.error?.message || "Checkout is unavailable.")
-        const provider = b.provider || "sandbox"
+        if (b.provider !== "sandbox" && b.provider !== "stripe") {
+          throw new Error(
+            "This checkout’s payment mode could not be verified. Ask the merchant for a current checkout link."
+          )
+        }
+        const provider = b.provider
         if (provider === "stripe") {
           if (!b.checkout_url) throw new Error("Hosted provider checkout is unavailable.")
           const checkoutUrl = new URL(b.checkout_url)

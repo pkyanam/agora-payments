@@ -17,10 +17,12 @@ export type StripeCheckoutStatus={id:string;status:'open'|'complete'|'expired';p
 export type StripeRefund={id:string;status:'pending'|'succeeded'|'failed'|'canceled'};
 
 function stripeError(status:number,code:string,message:string){return new ApiError(status,code,message);}
+export function stripeApiKeyMatchesMode(key:string|undefined,mode:'test'|'live'){return typeof key==='string'&&new RegExp(`^(?:sk|rk)_${mode}_[A-Za-z0-9]+$`).test(key);}
+export function stripeSecretKeyMatchesMode(key:string|undefined,mode:'test'|'live'){return typeof key==='string'&&new RegExp(`^sk_${mode}_[A-Za-z0-9]+$`).test(key);}
 
 /** Creates a hosted Checkout Session on the exact merchant account represented by the supplied secret key. */
 export async function createStripeCheckout(secretKey:string,input:StripeCheckoutInput,fetcher:typeof fetch=fetch):Promise<StripeCheckout>{
- if(!/^sk_(test|live)_[A-Za-z0-9]+$/.test(secretKey))throw stripeError(503,'provider_not_configured','The merchant Stripe secret is not configured.');
+ if(!/^(?:sk|rk)_(test|live)_[A-Za-z0-9]+$/.test(secretKey))throw stripeError(503,'provider_not_configured','A mode-matched Stripe API key is not configured.');
  if(!Number.isSafeInteger(input.amount)||input.amount<1||input.amount>10_000_000)throw stripeError(422,'invalid_amount','The payment amount is outside the supported range.');
  const fields=new URLSearchParams({
   mode:'payment',
@@ -43,6 +45,8 @@ export async function createStripeCheckout(secretKey:string,input:StripeCheckout
  catch{throw stripeError(503,'provider_outcome_unknown','Stripe did not return a response. Retry this exact payment with the same idempotency key before creating another.');}
  const value=await response.json().catch(()=>null) as {id?:unknown;url?:unknown;payment_intent?:unknown;status?:unknown;error?:{type?:string;code?:string}}|null;
  if(!response.ok){
+  if(response.status===403)throw stripeError(403,'provider_permission_denied','The Stripe API key lacks permission for Checkout Sessions. Grant the required restricted-key scope.');
+  if(response.status===401)throw stripeError(503,'provider_authentication_failed','Stripe rejected the configured API key. Verify its mode and validity.');
   if(response.status>=500)throw stripeError(503,'provider_outcome_unknown','Stripe could not confirm whether it created Checkout. Retry this exact request with the same idempotency key.');
   const code=value?.error?.code==='idempotency_key_in_use'?'provider_request_in_progress':'provider_rejected';
   throw stripeError(502,code,'Stripe rejected the Checkout request. Verify the merchant account and payment configuration.');
@@ -52,7 +56,7 @@ export async function createStripeCheckout(secretKey:string,input:StripeCheckout
 }
 
 export async function createStripeRefund(secretKey:string,input:{paymentIntent:string;amount:number;refundId:string;idempotencyKey:string;stripeAccountId?:string},fetcher:typeof fetch=fetch):Promise<StripeRefund>{
- if(!/^sk_(test|live)_[A-Za-z0-9]+$/.test(secretKey))throw stripeError(503,'provider_not_configured','The merchant Stripe secret is not configured.');
+ if(!/^(?:sk|rk)_(test|live)_[A-Za-z0-9]+$/.test(secretKey))throw stripeError(503,'provider_not_configured','A mode-matched Stripe API key is not configured.');
  if(!input.paymentIntent||!Number.isSafeInteger(input.amount)||input.amount<1)throw stripeError(422,'invalid_refund','The Stripe payment intent or refund amount is invalid.');
  const fields=new URLSearchParams({payment_intent:input.paymentIntent,amount:String(input.amount),'metadata[agora_refund_id]':input.refundId});
  let response:Response;
@@ -60,18 +64,18 @@ export async function createStripeRefund(secretKey:string,input:{paymentIntent:s
  try{response=await fetcher('https://api.stripe.com/v1/refunds',{method:'POST',headers,body:fields,signal:AbortSignal.timeout(15_000)});}
  catch{throw stripeError(503,'provider_outcome_unknown','Stripe did not return a refund response. Retry this exact refund with the same idempotency key.');}
  const value=await response.json().catch(()=>null) as {id?:unknown;status?:unknown}|null;
- if(!response.ok){if(response.status>=500)throw stripeError(503,'provider_outcome_unknown','Stripe could not confirm whether it created the refund. Retry this exact refund with the same idempotency key.');throw stripeError(502,'provider_rejected','Stripe rejected the refund request. Verify the payment and merchant account.');}
+ if(!response.ok){if(response.status===403)throw stripeError(403,'provider_permission_denied','The Stripe API key lacks permission to create refunds. Grant the required restricted-key scope.');if(response.status===401)throw stripeError(503,'provider_authentication_failed','Stripe rejected the configured API key. Verify its mode and validity.');if(response.status>=500)throw stripeError(503,'provider_outcome_unknown','Stripe could not confirm whether it created the refund. Retry this exact refund with the same idempotency key.');throw stripeError(502,'provider_rejected','Stripe rejected the refund request. Verify the payment and merchant account.');}
  if(typeof value?.id!=='string'||!['pending','succeeded','failed','canceled'].includes(String(value.status)))throw stripeError(502,'provider_invalid_response','Stripe returned an invalid refund response.');
  return{id:value.id,status:value.status as StripeRefund['status']};
 }
 
 /** Retrieve an existing Checkout Session for reconciliation after a missed webhook. */
 export async function retrieveStripeCheckout(secretKey:string,sessionId:string,stripeAccountId?:string,fetcher:typeof fetch=fetch):Promise<StripeCheckoutStatus>{
- const keyMode=secretKey.match(/^sk_(test|live)_[A-Za-z0-9]+$/)?.[1];const sessionMode=sessionId.match(/^cs_(test|live)_[A-Za-z0-9]+$/)?.[1];if(!keyMode||!sessionMode)throw stripeError(503,'provider_not_configured','The stored Stripe Checkout session is invalid or unavailable.');if(keyMode!==sessionMode)throw stripeError(409,'provider_mode_mismatch','Stripe key and Checkout session modes do not match.');
+ const keyMode=secretKey.match(/^(?:sk|rk)_(test|live)_[A-Za-z0-9]+$/)?.[1];const sessionMode=sessionId.match(/^cs_(test|live)_[A-Za-z0-9]+$/)?.[1];if(!keyMode||!sessionMode)throw stripeError(503,'provider_not_configured','The stored Stripe Checkout session is invalid or unavailable.');if(keyMode!==sessionMode)throw stripeError(409,'provider_mode_mismatch','Stripe key and Checkout session modes do not match.');
  const headers:Record<string,string>={Authorization:`Bearer ${secretKey}`};if(stripeAccountId)headers['Stripe-Account']=stripeAccountId;
  let response:Response;try{response=await fetcher(`https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}`,{headers,signal:AbortSignal.timeout(15_000)});}catch{throw stripeError(503,'provider_outcome_unknown','Stripe did not return a Checkout status. Retry reconciliation later.');}
  const value=await response.json().catch(()=>null) as Record<string,unknown>|null;
- if(!response.ok){if(response.status>=500)throw stripeError(503,'provider_outcome_unknown','Stripe could not confirm the Checkout status. Retry reconciliation later.');throw stripeError(502,'provider_reconcile_failed','Stripe could not retrieve this Checkout session.');}
+ if(!response.ok){if(response.status===403)throw stripeError(403,'provider_permission_denied','The Stripe API key lacks read permission for Checkout Sessions. Grant the required restricted-key scope.');if(response.status===401)throw stripeError(503,'provider_authentication_failed','Stripe rejected the configured API key. Verify its mode and validity.');if(response.status>=500)throw stripeError(503,'provider_outcome_unknown','Stripe could not confirm the Checkout status. Retry reconciliation later.');throw stripeError(502,'provider_reconcile_failed','Stripe could not retrieve this Checkout session.');}
  if(value?.id!==sessionId||!['open','complete','expired'].includes(String(value.status))||!['paid','unpaid','no_payment_required'].includes(String(value.payment_status))||!Number.isSafeInteger(value.amount_total)||typeof value.currency!=='string'||typeof value.livemode!=='boolean')throw stripeError(502,'provider_invalid_response','Stripe returned an invalid Checkout status.');
  const metadata=value.metadata&&typeof value.metadata==='object'?value.metadata as Record<string,unknown>:{};const safeMetadata:Record<string,string>={};for(const [k,v] of Object.entries(metadata))if(typeof v==='string')safeMetadata[k]=v;
  return{id:sessionId,status:value.status as StripeCheckoutStatus['status'],payment_status:value.payment_status as StripeCheckoutStatus['payment_status'],amount_total:value.amount_total as number,currency:value.currency,client_reference_id:typeof value.client_reference_id==='string'?value.client_reference_id:null,payment_intent:typeof value.payment_intent==='string'?value.payment_intent:null,livemode:value.livemode,metadata:safeMetadata};

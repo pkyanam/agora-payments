@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { LedgerStore, SqlValue } from '../../lib/server/store';
-import { createService, requireScope, requireProviderMode, ApiError, bodyOf, requireSameOrigin, responseError } from '../../lib/server/service';
+import { createService, requireScope, requireProviderMode, paymentProviderReadiness, ApiError, bodyOf, requireSameOrigin, responseError } from '../../lib/server/service';
 import { setMfaCookie } from '../../lib/server/admin-auth';
 import { createStripeCheckout, createStripeRefund, deauthorizeStripeAccount, exchangeStripeOAuthCode, getStripeConnectedAccount, retrieveStripeCheckout } from '../../lib/server/stripe';
 import type { Payment } from '../../lib/types';
@@ -8,6 +8,7 @@ import type { Payment } from '../../lib/types';
 interface Env {
   AGORA_LEDGER: DurableObjectNamespace<AgoraLedgerDO>;
   AGORA_WORKSPACE_ID?: string;
+  AGORA_DEPLOYMENT_ENV?: string;
   AGORA_PUBLIC_ORIGIN: string;
   AGORA_OWNER_EMAIL: string;
   AGORA_PAYMENT_PROVIDER?: string;
@@ -100,7 +101,7 @@ export class AgoraLedgerDO extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.store = makeStore(ctx.storage);
-    this.service = createService(this.store);
+    this.service = createService(this.store, env);
     ctx.storage.sql.exec(schema);
     for (const [table, column, definition] of [
       ['products', 'tenant_id', "TEXT NOT NULL DEFAULT 'owner'"],
@@ -140,7 +141,8 @@ export class AgoraLedgerDO extends DurableObject<Env> {
     try {
       const url = new URL(request.url);
       if (url.pathname === '/__health' && request.method === 'GET') {
-        return json({ ok: true, storage: 'durable-object-sqlite-v1', mode: this.env.AGORA_PAYMENT_PROVIDER || 'sandbox' }, 200, { 'X-Request-Id': requestId });
+        const readiness = paymentProviderReadiness(this.env);
+        return json({ ok: true, storage: 'durable-object-sqlite-v1', deployment: this.env.AGORA_DEPLOYMENT_ENV || 'unspecified', provider_status: readiness.provider_status, checkout_enabled: readiness.checkout_enabled, ...(readiness.provider_mode ? { provider_mode: readiness.provider_mode } : {}) }, 200, { 'X-Request-Id': requestId });
       }
       const method = request.method;
       const path = url.pathname;
@@ -304,7 +306,8 @@ export class AgoraLedgerDO extends DurableObject<Env> {
 
       if (path === '/api/console' && method === 'GET') {
         const actor = this.service.consoleActor(request);
-        return json(this.service.snapshot(actor.tenant_id), 200, { 'X-Request-Id': requestId });
+        const readiness = paymentProviderReadiness(this.env);
+        return json({ ...this.service.snapshot(actor.tenant_id), mode: this.env.AGORA_PAYMENT_PROVIDER === 'stripe' ? 'stripe' : 'sandbox', provider_status: readiness.provider_status, checkout_enabled: readiness.checkout_enabled, ...(readiness.provider_mode ? { provider_mode: readiness.provider_mode } : {}) }, 200, { 'X-Request-Id': requestId });
       }
       if (path === '/api/console' && method === 'POST') {
         const body = await bodyOf(request) as { action?: string; payload?: unknown };
@@ -319,11 +322,13 @@ export class AgoraLedgerDO extends DurableObject<Env> {
           return json(await this.createPaymentCheckout(actor, 'create_payment', request.headers.get('idempotency-key'), body.payload), 200, { 'X-Request-Id': requestId });
         }
         if (body.action === 'refund') {
+          if (!paymentProviderReadiness(this.env).checkout_enabled) throw new ApiError(503, 'provider_not_configured', 'Refunds are unavailable until a mode-matched processor API key and webhook secret are configured.');
           const result = this.service.mutate(actor, body.action, request.headers.get('idempotency-key'), body.payload, () => this.service.createRefund(actor, body.payload)) as Record<string, unknown>;
           if (result.status === 'pending' && result.provider === 'stripe') return json(await this.finishRefundOrReplay(actor.tenant_id, result), 200, { 'X-Request-Id': requestId });
           return json(result, 200, { 'X-Request-Id': requestId });
         }
         if (body.action === 'resolve_approval') {
+          if (!paymentProviderReadiness(this.env).checkout_enabled) throw new ApiError(503, 'provider_not_configured', 'Refunds are unavailable until a mode-matched processor API key and webhook secret are configured.');
           const result = this.service.mutate(actor, body.action, request.headers.get('idempotency-key'), body.payload, () => this.service.resolveApproval(actor, body.payload)) as { refund?: Record<string, unknown> };
           if (result.refund?.status === 'pending' && result.refund.provider === 'stripe') return json({ ...result, refund: await this.finishRefundOrReplay(actor.tenant_id, result.refund) }, 200, { 'X-Request-Id': requestId });
           return json(result, 200, { 'X-Request-Id': requestId });
@@ -338,6 +343,7 @@ export class AgoraLedgerDO extends DurableObject<Env> {
           return json({ email: invite.email, expires_at: invite.expires_at, invite_url: `${origin}/invite#${invite.token}` }, 200, { 'X-Request-Id': requestId, 'Referrer-Policy': 'no-referrer' });
         }
         if (body.action === 'create_key') {
+          if (!paymentProviderReadiness(this.env).checkout_enabled) throw new ApiError(503, 'provider_not_configured', 'API keys are unavailable until a mode-matched processor API key and webhook secret are configured.');
           let secret: string | undefined;
           const result = this.service.mutate(actor, body.action, request.headers.get('idempotency-key'), body.payload, () => {
             const created = this.service.createCredential(actor, body.payload);
@@ -409,6 +415,7 @@ export class AgoraLedgerDO extends DurableObject<Env> {
         }
       }
       if (path === '/api/v1/refunds' && method === 'POST') {
+        if (!paymentProviderReadiness(this.env).checkout_enabled) throw new ApiError(503, 'provider_not_configured', 'Refunds are unavailable until a mode-matched processor API key and webhook secret are configured.');
         const body = await bodyOf(request);
         const actor = this.service.authenticate(request);
         if (body && typeof body === 'object' && typeof (body as { payment_id?: unknown }).payment_id === 'string') {
@@ -420,6 +427,7 @@ export class AgoraLedgerDO extends DurableObject<Env> {
       }
       const reconcileMatch = path.match(/^\/api\/v1\/payments\/([A-Za-z0-9_-]{1,80})\/reconcile$/);
       if (reconcileMatch && method === 'POST') {
+        if (!paymentProviderReadiness(this.env).checkout_enabled) throw new ApiError(503, 'provider_not_configured', 'Payment reconciliation is unavailable until a mode-matched processor API key and webhook secret are configured.');
         const actor = this.service.authenticate(request);
         requireScope(actor, 'payments:write');
         this.service.requirePaymentMode(actor, reconcileMatch[1]);
@@ -427,7 +435,7 @@ export class AgoraLedgerDO extends DurableObject<Env> {
         const mode = context.provider_mode;
         if (mode !== 'test' && mode !== 'live') throw new ApiError(409, 'provider_mode_invalid', 'Stripe payment mode is missing.');
         const secretKey = mode === 'test' ? this.env.STRIPE_TEST_SECRET_KEY : this.env.STRIPE_LIVE_SECRET_KEY;
-        if (!secretKey || !secretKey.startsWith(mode === 'test' ? 'sk_test_' : 'sk_live_')) throw new ApiError(503, 'provider_not_configured', 'Stripe reconciliation credentials are not configured for this payment mode.');
+        if (!secretKey || !(secretKey.startsWith(mode === 'test' ? 'sk_test_' : 'sk_live_') || secretKey.startsWith(mode === 'test' ? 'rk_test_' : 'rk_live_'))) throw new ApiError(503, 'provider_not_configured', 'Stripe reconciliation credentials are not configured for this payment mode.');
         const session = await retrieveStripeCheckout(secretKey, context.provider_session_id!, context.provider_account_id || undefined);
         return json(this.service.reconcileStripePayment(context.id, actor.tenant_id, session), 200, { 'X-Request-Id': requestId });
       }
@@ -453,7 +461,7 @@ export class AgoraLedgerDO extends DurableObject<Env> {
       }
       if (checkoutMatch && method === 'POST') {
         const body = await bodyOf(request);
-        if (this.env.AGORA_PAYMENT_PROVIDER !== 'sandbox') throw new ApiError(409, 'simulation_disabled', 'Sandbox checkout simulation is disabled outside sandbox mode.');
+        if (this.env.AGORA_DEPLOYMENT_ENV === 'production' || this.env.AGORA_PAYMENT_PROVIDER !== 'sandbox') throw new ApiError(503, 'provider_not_configured', 'Sandbox payment simulation is disabled for this deployment.');
         return json(this.service.simulate(checkoutMatch[1], body), 200, { 'X-Request-Id': requestId });
       }
       throw new ApiError(404, 'not_found', 'Endpoint not found.');
@@ -469,12 +477,15 @@ export class AgoraLedgerDO extends DurableObject<Env> {
   }
 
   private async createPaymentCheckout(actor: ReturnType<ReturnType<typeof createService>['authenticate']>, route: string, key: string | null, body: unknown) {
+    const readiness = paymentProviderReadiness(this.env);
+    if (!readiness.checkout_enabled) throw new ApiError(503, 'provider_not_configured', 'Payment acceptance is unavailable until a mode-matched processor API key, webhook secret, and public origin are configured.');
     const provider = this.env.AGORA_PAYMENT_PROVIDER || 'sandbox';
+    const mode = readiness.provider_mode;
     if (provider === 'sandbox') {
       requireProviderMode(actor,'sandbox');
     } else if (provider === 'stripe') {
-      if (this.env.AGORA_STRIPE_MODE !== 'test') throw new ApiError(503, 'live_disabled', 'Only Stripe test mode is enabled; live payments require separate approval and activation.');
-      requireProviderMode(actor,'test');
+      if (mode !== 'test' && mode !== 'live') throw new ApiError(503, 'provider_not_configured', 'Set Stripe mode to test or live before accepting payments.');
+      requireProviderMode(actor,mode);
     } else {
       throw new ApiError(503, 'provider_not_configured', 'The configured payment provider is unavailable.');
     }
@@ -483,14 +494,14 @@ export class AgoraLedgerDO extends DurableObject<Env> {
       const { checkout_token, tenant_id: _tenantId, ...visible } = payment;
       return { ...visible, checkout_url: `/checkout/${checkout_token}`, provider: 'sandbox' };
     }
-    const secretKey = this.env.STRIPE_TEST_SECRET_KEY;
-        if (!secretKey || !secretKey.startsWith('sk_test_')) throw new ApiError(503, 'provider_not_configured', 'Set a test-mode STRIPE_TEST_SECRET_KEY before enabling Stripe test Checkout.');
-    const mode = this.env.AGORA_STRIPE_MODE;
+    const secretKey = mode === 'live' ? this.env.STRIPE_LIVE_SECRET_KEY : this.env.STRIPE_TEST_SECRET_KEY;
+    const prefix = mode === 'live' ? 'live' : 'test';
+    if (!mode || !secretKey || !(secretKey.startsWith(`sk_${prefix}_`) || secretKey.startsWith(`rk_${prefix}_`))) throw new ApiError(503, 'provider_not_configured', `Set a mode-matched Stripe ${prefix} API key before enabling checkout.`);
     const configured = this.env.AGORA_PUBLIC_ORIGIN;
     if (!configured) throw new ApiError(503, 'provider_not_configured', 'Set AGORA_PUBLIC_ORIGIN before enabling Stripe Checkout.');
-    const connected = actor.tenant_id === 'owner' ? null : this.service.stripeAccountForTenant(actor.tenant_id, 'test');
+    const connected = actor.tenant_id === 'owner' ? null : this.service.stripeAccountForTenant(actor.tenant_id, mode);
     if (actor.tenant_id !== 'owner' && (!connected || connected.status !== 'connected' || !connected.charges_enabled)) throw new ApiError(409, 'merchant_connection_required', 'This approved merchant must connect a Stripe account with charges enabled.');
-    this.service.prepareStripePayment(payment.id, 'test', actor.tenant_id, connected?.account_id || null);
+    this.service.prepareStripePayment(payment.id, mode, actor.tenant_id, connected?.account_id || null);
     const session = await createStripeCheckout(secretKey, {
       amount: payment.amount,
       currency: 'usd',
@@ -502,19 +513,21 @@ export class AgoraLedgerDO extends DurableObject<Env> {
       idempotencyKey: `agora-checkout-${payment.id}`,
       ...(connected ? { stripeAccountId: connected.account_id } : {}),
     });
-    this.service.saveStripeSession(payment.id, session, 'test', actor.tenant_id, connected?.account_id || null);
+    this.service.saveStripeSession(payment.id, session, mode, actor.tenant_id, connected?.account_id || null);
         const { checkout_token: _checkoutToken, tenant_id: _tenantId, ...visible } = payment;
-    return { ...visible, checkout_url: `${configured}/checkout/start#${payment.checkout_token}`, provider: 'stripe', provider_mode: 'test' };
+    return { ...visible, checkout_url: `${configured}/checkout/start#${payment.checkout_token}`, provider: 'stripe', provider_mode: mode };
   }
 
   private async submitStripeRefund(tenantId: string, refundId: string) {
     const context = this.service.stripeRefundContext(refundId);
-    if (context.provider_mode !== 'test') throw new ApiError(503, 'live_disabled', 'Live refunds are disabled until separately approved and activated.');
-    const secretKey = this.env.STRIPE_TEST_SECRET_KEY;
-    if (!secretKey || !secretKey.startsWith('sk_test_')) throw new ApiError(503, 'provider_not_configured', 'Set a test-mode STRIPE_TEST_SECRET_KEY before enabling Stripe test refunds.');
+    const mode = context.provider_mode;
+    if (mode !== 'test' && mode !== 'live') throw new ApiError(409, 'provider_mode_invalid', 'Stripe refund mode is missing.');
+    const secretKey = mode === 'live' ? this.env.STRIPE_LIVE_SECRET_KEY : this.env.STRIPE_TEST_SECRET_KEY;
+    const prefix = mode === 'live' ? 'live' : 'test';
+    if (!secretKey || !(secretKey.startsWith(`sk_${prefix}_`) || secretKey.startsWith(`rk_${prefix}_`))) throw new ApiError(503, 'provider_not_configured', `Set a mode-matched Stripe ${prefix} API key before enabling refunds.`);
     if (tenantId !== context.tenant_id) throw new ApiError(404, 'not_found', 'Refund request not found.');
     if (tenantId !== 'owner') {
-      const connected = this.service.stripeAccountForTenant(tenantId, 'test');
+      const connected = this.service.stripeAccountForTenant(tenantId, mode);
       if (!connected || connected.status !== 'connected' || !connected.charges_enabled || connected.account_id !== context.provider_account_id) throw new ApiError(409, 'merchant_connection_required', 'This merchant must reconnect its own Stripe account before processor refunds are enabled.');
     }
     const providerRefund = await createStripeRefund(secretKey, {
