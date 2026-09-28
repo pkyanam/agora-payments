@@ -12,7 +12,7 @@
     "AGORA_DEPLOYMENT_ENV": "production",
     "AGORA_PAYMENT_PROVIDER": "sandbox",
     "AGORA_PUBLIC_ORIGIN": "https://agora-payments.vercel.app",
-    "AGORA_OWNER_EMAIL": "info@belweave.com"
+    "AGORA_OWNER_EMAIL": "kyanam.preetham@gmail.com"
   },
   "durable_objects": {
     "bindings": [
