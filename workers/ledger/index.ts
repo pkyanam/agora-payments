@@ -155,7 +155,7 @@ export class AgoraLedgerDO extends DurableObject<Env> {
   }
 
   async alarm(){
-    await dispatchWebhookBatch(this.store,this.env as unknown as Record<string,string|undefined>);
+    await dispatchWebhookBatch(this.store,this.env as unknown as Record<string,string|undefined>,fetch);
     const row=this.store.one<{wake:string|null}>("SELECT MIN(CASE WHEN status='pending' THEN next_attempt_at ELSE locked_until END) AS wake FROM webhook_deliveries WHERE status IN ('pending','delivering')");
     if(row?.wake){const at=Date.parse(row.wake);if(Number.isFinite(at))await this.ctx.storage.setAlarm(Math.max(Date.now()+1000,at));}
   }

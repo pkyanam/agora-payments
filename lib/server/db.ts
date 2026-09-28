@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { LedgerStore, SqlValue } from './store';
 import { dispatchWebhookBatch, enqueueWebhookEvent } from './outgoing-webhooks';
+import { createNodeWebhookFetch } from './outgoing-webhooks-node';
 const path = process.env.AGORA_DATABASE_PATH || resolve('.data/agora.sqlite');
 mkdirSync(dirname(path), { recursive:true });
 export const db = new DatabaseSync(path);
@@ -83,7 +84,7 @@ let webhookTimer:ReturnType<typeof setInterval>|undefined;
 function scheduleWebhookAlarm(){
   if(process.env.AGORA_DEPLOYMENT_TARGET!=='node'||process.env.AGORA_DEPLOYMENT_TYPE!=='community'||process.env.VERCEL==='1'||process.env.VERCEL_ENV)return;
   if(webhookTimer)return;
-  webhookTimer=setInterval(()=>{void dispatchWebhookBatch(localStore).catch(()=>{});},5000);
+  webhookTimer=setInterval(()=>{void dispatchWebhookBatch(localStore,process.env,createNodeWebhookFetch(process.env)).catch(()=>{});},5000);
   webhookTimer.unref?.();
 }
 export const localStore:LedgerStore={one:<T>(sql:string,...args:SqlValue[])=>one<T>(sql,...args as SQLInputValue[]),all:<T>(sql:string,...args:SqlValue[])=>all<T>(sql,...args as SQLInputValue[]),run:(sql:string,...args:SqlValue[])=>run(sql,...args as SQLInputValue[]),transaction,id,now,event,journal,scheduleWebhookAlarm};

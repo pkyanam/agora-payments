@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
+import ipaddr from 'ipaddr.js';
 import { ApiError } from './errors';
 import type { LedgerStore } from './store';
 import { decryptWorkspaceSecret, encryptWorkspaceSecret } from './stripe-config';
@@ -21,16 +22,34 @@ type EndpointRow={id:string;tenant_id:string;url:string;provider_mode:WebhookMod
 type DeliveryRow={id:string;endpoint_id:string;event_id:string;event_type:string;tenant_id:string;payload:string;status:DeliveryStatus;attempt_count:number;next_attempt_at:string;last_attempt_at:string|null;delivered_at:string|null;last_http_status:number|null;last_error:string|null;lease_token:string|null;locked_until:string|null;created_at:string};
 const allowed=new Set<string>(outgoingEventTypes);
 
+/** Reject IP literals that are not globally routable Internet addresses. */
+export function isPublicWebhookAddress(raw:string):boolean {
+  let parsed:ipaddr.IPv4|ipaddr.IPv6;
+  try{parsed=ipaddr.parse(raw.replace(/^\[|\]$/g,''));}catch{return false;}
+  if(parsed.kind()==='ipv6'){
+    const text=parsed.toString().toLowerCase();
+    // Only global-unicast IPv6 (2000::/3) is accepted; mapped, transition,
+    // local, documentation, multicast, and other special ranges are rejected.
+    const bytes=(parsed as ipaddr.IPv6).toByteArray();
+    if(parsed.range()!=='unicast'||!/^2[0-9a-f]{3}:/i.test(text))return false;
+    // The IANA 2001::/23 special-purpose block contains protocol assignments,
+    // not ordinary public webhook hosts.
+    if(bytes[0]===0x20&&bytes[1]===0x01&&(bytes[2]&0xfe)===0)return false;
+  }else if(parsed.range()!=='unicast')return false;
+  const ipv4=parsed.kind()==='ipv4'?parsed as ipaddr.IPv4:undefined;
+  if(ipv4){const octets=ipv4.toByteArray();if(octets[0]===198&&octets[1]>=18&&octets[1]<=19)return false;}
+  return true;
+}
+function localHostname(hostname:string){return hostname==='localhost'||hostname.endsWith('.localhost')||hostname==='127.0.0.1'||hostname==='[::1]';}
+
 function validateUrl(raw:unknown,environment:Environment) {
   if(typeof raw!=='string'||raw.length>2048)throw new ApiError(422,'invalid_webhook_url','Provide a valid public HTTPS URL.');
   let url:URL;try{url=new URL(raw)}catch{throw new ApiError(422,'invalid_webhook_url','Provide a valid public HTTPS URL.');}
-  const local=url.hostname==='localhost'||url.hostname.endsWith('.localhost')||url.hostname==='127.0.0.1'||url.hostname==='[::1]';
+  const local=localHostname(url.hostname);
   const privateHost=local||url.hostname.endsWith('.local')||url.hostname.endsWith('.internal')||url.hostname.endsWith('.lan')||url.hostname.endsWith('.test')||url.hostname==='metadata.google.internal';
-  const ip=isIP(url.hostname.replace(/^\[|\]$/g,''));
-  let privateIp=false;
-  if(ip===4){const n=url.hostname.split('.').map(Number);privateIp=n[0]===0||n[0]===10||n[0]===127||n[0]>=224||n[0]===169&&n[1]===254||n[0]===172&&n[1]>=16&&n[1]<=31||n[0]===192&&n[1]===168;}
-  if(ip===6){const host=url.hostname.toLowerCase();privateIp=host==='[::1]'||host.startsWith('[fc')||host.startsWith('[fd')||host.startsWith('[fe8')||host.startsWith('[fe9')||host.startsWith('[fea')||host.startsWith('[feb');}
-  const localAllowed=environment.NODE_ENV!=='production'&&environment.VERCEL!=='1'&&environment.AGORA_ALLOW_LOCAL_WEBHOOKS==='true'&&local;
+  const rawHost=url.hostname.replace(/^\[|\]$/g,'');const ip=isIP(rawHost);
+  const privateIp=ip!==0&&!isPublicWebhookAddress(rawHost);
+  const localAllowed=environment.AGORA_DEPLOYMENT_TYPE==='community'&&environment.AGORA_DEPLOYMENT_TARGET==='node'&&environment.NODE_ENV!=='production'&&environment.VERCEL!=='1'&&!environment.VERCEL_ENV&&environment.AGORA_ALLOW_LOCAL_WEBHOOKS==='true'&&local;
   if(url.username||url.password||url.hash||(!localAllowed&&(url.protocol!=='https:'||privateHost||privateIp))||(localAllowed&&!['http:','https:'].includes(url.protocol)))throw new ApiError(422,'invalid_webhook_url','Webhook endpoints must use public HTTPS. Local loopback is allowed only when explicitly enabled for local development.');
   return url.toString();
 }
@@ -67,11 +86,13 @@ export function replayWebhookDelivery(store:LedgerStore,actor:{tenant_id:string}
 
 function eventMode(store:LedgerStore,delivery:DeliveryRow):WebhookMode|null {const event=store.one<{object_id:string;type:string}>('SELECT object_id,type FROM events WHERE id=? AND tenant_id=?',delivery.event_id,delivery.tenant_id);if(!event)return null;let payment=store.one<{provider:string;provider_mode:string|null}>('SELECT provider,provider_mode FROM payments WHERE id=? AND tenant_id=?',event.object_id,delivery.tenant_id);if(!payment&&event.type==='approval.requested'){const approval=store.one<{payment_id:string}>('SELECT payment_id FROM approvals WHERE id=? AND tenant_id=?',event.object_id,delivery.tenant_id);if(approval)payment=store.one<{provider:string;provider_mode:string|null}>('SELECT provider,provider_mode FROM payments WHERE id=? AND tenant_id=?',approval.payment_id,delivery.tenant_id);}if(payment?.provider==='sandbox')return 'test';if(payment?.provider==='stripe'&&(payment.provider_mode==='test'||payment.provider_mode==='live'))return payment.provider_mode;return null;}
 function errorCode(status:number){return `http_${status}`;}
-export async function dispatchWebhookBatch(store:LedgerStore,environment:Environment=process.env,fetcher:typeof fetch=fetch,limit=10){
+export async function dispatchWebhookBatch(store:LedgerStore,environment:Environment=process.env,fetcher:typeof fetch|undefined=undefined,limit=10){
+  if(!fetcher)throw new Error('webhook_transport_required');
+  const transport=fetcher;
   const now=store.now();const jobs=store.transaction(()=>{const rows=store.all<DeliveryRow>("SELECT * FROM webhook_deliveries WHERE (status='pending' AND next_attempt_at<=?) OR (status='delivering' AND locked_until<=?) ORDER BY next_attempt_at LIMIT ?",now,now,Math.max(1,Math.min(limit,50)));const claimed:DeliveryRow[]=[];for(const row of rows){if(row.status==='delivering'){store.run("UPDATE webhook_attempts SET finished_at=?,error='worker_interrupted' WHERE delivery_id=? AND finished_at IS NULL",now,row.id);}const token=store.id('lease');const attempt=row.attempt_count+1;store.run("UPDATE webhook_deliveries SET status='delivering',attempt_count=?,last_attempt_at=?,lease_token=?,locked_until=? WHERE id=?",attempt,now,token,new Date(Date.now()+30000).toISOString(),row.id);store.run('INSERT INTO webhook_attempts(id,delivery_id,attempt,started_at) VALUES(?,?,?,?)',store.id('wha'),row.id,attempt,now);claimed.push({...row,status:'delivering',attempt_count:attempt,last_attempt_at:now,lease_token:token});}return claimed;});
   for(const job of jobs){const endpoint=store.one<EndpointRow>('SELECT * FROM webhook_endpoints WHERE id=? AND tenant_id=?',job.endpoint_id,job.tenant_id);if(!endpoint||endpoint.status==='archived'||endpoint.status==='paused'){store.transaction(()=>{store.run("UPDATE webhook_attempts SET finished_at=?,error='endpoint_unavailable' WHERE delivery_id=? AND attempt=?",store.now(),job.id,job.attempt_count);store.run("UPDATE webhook_deliveries SET status='paused',last_error='endpoint_unavailable',lease_token=NULL,locked_until=NULL WHERE id=? AND lease_token=?",job.id,job.lease_token);});continue;}const mode=eventMode(store,job);if(mode&&mode!==endpoint.provider_mode){store.transaction(()=>{store.run("UPDATE webhook_attempts SET finished_at=?,error='skipped_mode' WHERE delivery_id=? AND attempt=?",store.now(),job.id,job.attempt_count);store.run("UPDATE webhook_deliveries SET status='skipped_mode',last_error=NULL,lease_token=NULL,locked_until=NULL WHERE id=? AND lease_token=?",job.id,job.lease_token);});continue;}
     const secret=decryptWorkspaceSecret(endpoint.secret_ciphertext,environment);const timestamp=Math.floor(Date.now()/1000).toString();const signature=createHmac('sha256',secret).update(`${timestamp}.${job.payload}`).digest('hex');let status:number|null=null,error:string|null=null;const started=Date.now();
-    try{const response=await fetcher(endpoint.url,{method:'POST',headers:{'Content-Type':'application/json','User-Agent':'Agora-Webhooks/1','Agora-Event-Id':job.event_id,'Agora-Delivery-Id':job.id,'Agora-Event-Type':job.event_type,'Agora-Timestamp':timestamp,'Agora-Signature':`v1=${signature}`},body:job.payload,redirect:'manual',signal:AbortSignal.timeout(10_000)});status=response.status;await response.body?.cancel();if(status<200||status>=300)error=errorCode(status);}catch{error='network_error';}
+    try{const response=await transport(endpoint.url,{method:'POST',headers:{'Content-Type':'application/json','User-Agent':'Agora-Webhooks/1','Agora-Event-Id':job.event_id,'Agora-Delivery-Id':job.id,'Agora-Event-Type':job.event_type,'Agora-Timestamp':timestamp,'Agora-Signature':`v1=${signature}`},body:job.payload,redirect:'manual',signal:AbortSignal.timeout(10_000)});status=response.status;await response.body?.cancel();if(status<200||status>=300)error=errorCode(status);}catch{error='network_error';}
     const finished=store.now();const delivered=!error;const done=job.attempt_count>=maxAttempts;const delay=retrySeconds[Math.min(job.attempt_count-1,retrySeconds.length-1)];const next=delivered||done?job.next_attempt_at:new Date(Date.now()+delay*1000).toISOString();const finalStatus:DeliveryStatus=delivered?'delivered':done?'failed':'pending';store.transaction(()=>{store.run('UPDATE webhook_attempts SET finished_at=?,http_status=?,duration_ms=?,error=?,response_excerpt=\'\' WHERE delivery_id=? AND attempt=?',finished,status,Date.now()-started,error,job.id,job.attempt_count);store.run('UPDATE webhook_deliveries SET status=?,next_attempt_at=?,delivered_at=?,last_http_status=?,last_error=?,lease_token=NULL,locked_until=NULL WHERE id=? AND lease_token=?',finalStatus,next,delivered?finished:null,status,error,job.id,job.lease_token);});
   }
   const due=store.one<{next_attempt_at:string}>('SELECT MIN(next_attempt_at) AS next_attempt_at FROM webhook_deliveries WHERE status=\'pending\'');return{processed:jobs.length,next_attempt_at:due?.next_attempt_at||null};
