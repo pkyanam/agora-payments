@@ -111,8 +111,18 @@ mkdir -p "$(dirname "$APP_DIR")"
 APP_DIR="$(cd "$(dirname "$APP_DIR")" && pwd -P)/$(basename "$APP_DIR")"
 [[ ! -L "$APP_DIR" ]] || { printf 'Refusing a symlink installation directory: %s\n' "$APP_DIR" >&2; exit 1; }
 if [[ -f "$APP_DIR/install.json" ]]; then
-  if ((UPDATE)); then exec bash "$APP_DIR/update.sh" --dir "$APP_DIR"; fi
-  node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(`Agora ${m.current_version} is already installed at ${m.install_dir}. Use bash install.sh --dir "${m.install_dir}" --update to update.`)' "$APP_DIR/install.json"
+  if ((UPDATE || NON_INTERACTIVE)); then exec bash "$APP_DIR/update.sh" --dir "$APP_DIR"; fi
+  node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(`Agora ${m.current_version} is installed at ${m.install_dir}.`)' "$APP_DIR/install.json"
+  if has_interactive_tty; then
+    printf 'Check GitHub for the latest release and update this installation? [Y/n] ' > /dev/tty
+    IFS= read -r UPDATE_ANSWER < /dev/tty || UPDATE_ANSWER=
+    case "$UPDATE_ANSWER" in
+      ''|[yY]|[yY][eE][sS]) exec bash "$APP_DIR/update.sh" --dir "$APP_DIR" ;;
+      [nN]|[nN][oO]) printf '%s\n' 'Kept the existing installation unchanged.'; exit 0 ;;
+      *) printf '%s\n' 'Please answer yes or no.' >&2; exit 2 ;;
+    esac
+  fi
+  printf 'Run this installer again with --non-interactive to update %s.\n' "$APP_DIR"
   exit 0
 fi
 # On a fresh local install, use the next available loopback port when the
@@ -208,6 +218,7 @@ const encryptionKey = randomBytes(32).toString('base64');
 const q = (s) => JSON.stringify(s);
 const rows = [
   'NODE_ENV=production', 'AGORA_DEPLOYMENT_TYPE=community', 'AGORA_DEPLOYMENT_TARGET=node', 'AGORA_DEPLOYMENT_ENV=community',
+  ...(process.env.AGORA_DEPLOYMENT_HOSTING === 'boat' ? ['AGORA_DEPLOYMENT_HOSTING=boat'] : []),
   'AGORA_PAYMENT_PROVIDER=stripe', 'AGORA_STRIPE_MODE=test', `AGORA_VERSION=${q(version)}`,
   `AGORA_PUBLIC_ORIGIN=${q(origin)}`, `AGORA_OWNER_SETUP_TOKEN_HASH=${q(setupTokenHash)}`, ...(email ? [`AGORA_OWNER_EMAIL=${q(email)}`] : []),
   `AGORA_ADMIN_TOKEN=${q(adminToken)}`, `AGORA_MFA_ENCRYPTION_KEY=${q(encryptionKey)}`,

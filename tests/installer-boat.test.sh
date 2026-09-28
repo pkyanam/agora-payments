@@ -195,6 +195,7 @@ first_installs="$(grep -c '^npm ' "$TEST_LOG" || true)"
 OUTPUT="$(bash "$ROOT/install.sh" --target boat --boat-id bx_test123 --owner-email "$EMAIL" --dir "$HOME/agora-install" --port "$PORT" --non-interactive)"
 [[ "$OUTPUT" == *"https://bx-test-123-$PORT.on.ascii.dev"* ]]
 [[ "$(grep -c '^npm ' "$TEST_LOG" || true)" == "$first_installs" ]]
+grep -Fqx 'AGORA_DEPLOYMENT_HOSTING=boat' "$HOME/agora-install/state/.env.local"
 
 before_update="$(wc -l < "$TEST_LOG" | tr -d ' ')"
 bash "$ROOT/install.sh" --target boat --boat-id bx_test123 --owner-email "$EMAIL" --dir "$HOME/agora-install" --port "$PORT" --non-interactive --update >/dev/null

@@ -177,6 +177,11 @@ NODE
       fail "Could not snapshot the Agora database. The old deployment was restored; no update was attempted. Recovery files are at $rollback_dir."
     fi
   fi
+  node --input-type=module - "$APP_DIR/state/.env.local" <<'NODE'
+import { chmod, readFile, rename, writeFile } from 'node:fs/promises';
+const file=process.argv[2],contents=await readFile(file,'utf8');
+if(!/^AGORA_DEPLOYMENT_HOSTING=/m.test(contents)){const rows=contents.split(/\r?\n/).filter(Boolean);rows.push('AGORA_DEPLOYMENT_HOSTING=boat');const tmp=`${file}.${process.pid}.tmp`;await writeFile(tmp,rows.join('\n')+'\n',{mode:0o600,flag:'wx'});await rename(tmp,file);await chmod(file,0o600);}
+NODE
   if ! "$APP_DIR/update.sh" --dir "$APP_DIR"; then
     update_result=1
   else
@@ -215,13 +220,11 @@ if [[ -f "$APP_DIR/install.json" ]]; then
   if [[ -n "$OWNER_EMAIL" && "$OWNER_EMAIL" != "$saved_email" ]]; then fail 'Owner email differs from the existing installation; refusing to change its credentials.'; fi
   [[ -x "$APP_DIR/start.sh" && -x "$APP_DIR/update.sh" ]] || fail 'Existing installation is missing its managed start/update scripts.'
   write_service "$(id -un)"
-  if [[ "$UPDATE" == 1 ]]; then
-    update_with_rollback || fail 'Agora update failed; the previous release and database were restored and verified.'
-  else
-    "${SUDO[@]}" systemctl restart "$SERVICE"
-    wait_for_health || fail "Agora did not become healthy on port $PORT; inspect `sudo journalctl -u $SERVICE`."
-  fi
-  host_publicly
+  # Encountering a managed installation means this installer is being rerun
+  # against that target. Check the pinned repository's latest main release;
+  # update.sh is a no-op when already current. The transactional wrapper keeps
+  # the service quiesced while it snapshots and rolls back SQLite/config.
+  update_with_rollback || fail 'Agora update failed; the previous release and database were restored and verified.'
   if ! install_agora_cli; then printf 'Warning: app is live, but the Agora CLI did not install. Retry inside the sandbox with the Agora CLI installer.\n' >&2; fi
   exit 0
 fi
@@ -260,7 +263,7 @@ git -C "$SOURCE_DIR" checkout --detach FETCH_HEAD >/dev/null 2>&1 || fail 'Could
 [[ "$(git -C "$SOURCE_DIR" rev-parse HEAD)" == "$SOURCE_COMMIT" ]] || fail 'Remote installer source did not match the local installer revision.'
 printf 'Installing pinned Agora source %s into %s...\n' "${SOURCE_COMMIT:0:12}" "$APP_DIR"
 if [[ -n "$OWNER_EMAIL" ]]; then OWNER_ARGS=(--owner-email "$OWNER_EMAIL"); else OWNER_ARGS=(); fi
-bash "$SOURCE_DIR/install.sh" --target local --non-interactive "${OWNER_ARGS[@]}" --dir "$APP_DIR" --url "$PUBLIC_ORIGIN" --port "$PORT" --host 0.0.0.0 || fail 'Agora installation failed. The sandbox and its private route were left intact for recovery.'
+AGORA_DEPLOYMENT_HOSTING=boat bash "$SOURCE_DIR/install.sh" --target local --non-interactive "${OWNER_ARGS[@]}" --dir "$APP_DIR" --url "$PUBLIC_ORIGIN" --port "$PORT" --host 0.0.0.0 || fail 'Agora installation failed. The sandbox and its private route were left intact for recovery.'
 
 write_service "$(id -un)"
 "${SUDO[@]}" systemctl start "$SERVICE"

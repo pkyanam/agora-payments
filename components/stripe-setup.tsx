@@ -17,6 +17,19 @@ type SetupState = {
   configured: Record<Mode, { secret_key: boolean; webhook_secret: boolean; webhook_verified: boolean }>
 }
 type Result = { error?: { message?: string }; [key: string]: unknown }
+const requiredWebhookEvents = [
+  "checkout.session.completed",
+  "checkout.session.async_payment_succeeded",
+  "checkout.session.async_payment_failed",
+  "checkout.session.expired",
+  "refund.updated",
+]
+const optionalRiskEvents = [
+  "radar.early_fraud_warning.created",
+  "radar.early_fraud_warning.updated",
+  "review.opened",
+  "review.closed",
+]
 
 async function request(path: string, init?: RequestInit): Promise<Result> {
   const response = await fetch(path, { cache: "no-store", ...init })
@@ -58,9 +71,9 @@ export function StripeSetup({ onChange }: { onChange: () => void }) {
   const active = setup?.configured[mode]
   const listenerCommand = setup ? `stripe listen --forward-to '${setup.webhook_url}'` : ""
   const triggerCommand = "stripe trigger account.updated"
-  const copyCommand = (value: string, label: string) => navigator.clipboard.writeText(value)
+  const copyValue = (value: string, label: string) => navigator.clipboard.writeText(value)
     .then(() => toast.success(`${label} copied`))
-    .catch(() => toast.error("Clipboard unavailable; select and copy the command."))
+    .catch(() => toast.error("Clipboard unavailable; select and copy the value."))
   const save = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setBusy(true)
@@ -83,7 +96,7 @@ export function StripeSetup({ onChange }: { onChange: () => void }) {
       await load()
       onChange()
       if (result.readiness === "ready") toast.success(`Stripe ${mode} mode is ready.`)
-      else toast.success(`Stripe ${mode} settings saved. Send a signed test event to verify the webhook.`)
+      else toast.success(`Stripe ${mode} settings saved. Finish the webhook steps above to verify signed delivery.`)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Stripe settings could not be saved.")
     } finally {
@@ -121,8 +134,8 @@ export function StripeSetup({ onChange }: { onChange: () => void }) {
       if (!result.ok) throw new Error("Stripe could not confirm this account. Check the selected mode and key.")
       await load()
       onChange()
-      if (!result.webhook?.configured) setMessage(`Stripe account ${result.account_id || "connected"} responded. Add the webhook signing secret, then send a signed test event to ${setup?.webhook_url || "the endpoint above"}.`)
-      else if (!result.webhook.verified) setMessage("Stripe account responded. Send a signed test event to the endpoint below; Agora verifies the signature when it arrives.")
+      if (!result.webhook?.configured) setMessage(`Stripe account ${result.account_id || "connected"} responded. Add the matching endpoint signing secret, save it, then follow the dashboard delivery steps above.`)
+      else if (!result.webhook.verified) setMessage("Stripe account responded. Agora still needs a real signed event from the configured endpoint; use the Sandbox verification event above, then refresh status.")
       else toast.success(`Stripe ${mode} connection verified.`)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Stripe could not be verified.")
@@ -161,16 +174,46 @@ export function StripeSetup({ onChange }: { onChange: () => void }) {
             <span className={active?.webhook_secret ? "complete" : "incomplete"}>{active?.webhook_secret ? "✓" : "2"} Webhook secret {active?.webhook_secret ? "saved" : "needed"}</span>
             <span className={active?.webhook_verified ? "complete" : "incomplete"}>{active?.webhook_verified ? "✓" : "3"} Signed event {active?.webhook_verified ? "verified" : "to verify"}</span>
           </div>
-          <div className="webhook-endpoint">
-            <div><strong>Webhook endpoint</strong><p>Add this endpoint in Stripe → Developers → Webhooks for the selected mode. Send Stripe’s <code>account.updated</code> test event to verify webhook delivery. Also subscribe to <code>checkout.session.completed</code>, <code>checkout.session.async_payment_succeeded</code>, <code>checkout.session.async_payment_failed</code>, <code>checkout.session.expired</code>, and <code>refund.updated</code>. Agora reconciles refund updates only for refunds it created and can map by metadata; refunds created outside Agora are not imported. For mapped risk signals, add <code>radar.early_fraud_warning.created</code>, <code>radar.early_fraud_warning.updated</code>, <code>review.opened</code>, and <code>review.closed</code>. Only unambiguous payment matches appear in Agora.</p></div>
-            <div className="copyable-value"><code>{setup.webhook_url}</code><Button variant="secondary" size="sm" onClick={() => navigator.clipboard.writeText(setup.webhook_url).then(() => toast.success("Webhook URL copied")).catch(() => toast.error("Clipboard unavailable; select and copy the URL."))}>Copy URL</Button></div>
+          <div className="webhook-endpoint webhook-dashboard-setup">
+            <div>
+              <strong>Set up and verify in Stripe Dashboard</strong>
+              <ol className="webhook-setup-steps">
+                <li>In the selected mode, open <strong>Workbench → Webhooks</strong>. Create an event destination for <strong>Your account</strong> using <strong>Snapshot events</strong>, then paste this URL.</li>
+                <li>Select the events below, create the endpoint, reveal its signing secret, and paste the <code>whsec_…</code> value into the matching field below. Save the settings.</li>
+                {mode === "test" && <li>For a no-charge check, subscribe temporarily to the verification event below, then create a disposable product with no price in the Stripe Sandbox Product catalog. Confirm a successful delivery in the endpoint’s <strong>Event deliveries</strong>, select <strong>Refresh status</strong> below, and remove the temporary event.</li>}
+                {mode === "live" && <li>Live status becomes verified after Agora receives a real signed live event. Don’t create a live payment just to test delivery.</li>}
+              </ol>
+            </div>
+            <div className="copyable-value"><code>{setup.webhook_url}</code><Button type="button" variant="secondary" size="sm" onClick={() => void copyValue(setup.webhook_url, "Webhook URL")}>Copy URL</Button></div>
+            <div className="webhook-event-group">
+              <div className="webhook-event-heading"><div><strong>Webhook events</strong><p>Required for payment and refund updates.</p></div></div>
+              <ul className="webhook-event-list" aria-label="Required webhook events">
+                {requiredWebhookEvents.map((eventName) => <li key={eventName}><code>{eventName}</code><Button type="button" variant="ghost" size="sm" aria-label={`Copy ${eventName} webhook event`} onClick={() => void copyValue(eventName, eventName)}>Copy</Button></li>)}
+              </ul>
+              <p className="form-note">Refund updates are reconciled only for refunds Agora created. Refunds created outside Agora are not imported.</p>
+            </div>
+            <details className="webhook-optional-events">
+              <summary>Optional risk events</summary>
+              <p>Add these if you want Agora to record mapped early fraud warnings and Radar review changes.</p>
+              <div className="webhook-event-heading"><span className="form-note">Risk signals</span></div>
+              <ul className="webhook-event-list" aria-label="Optional risk webhook events">
+                {optionalRiskEvents.map((eventName) => <li key={eventName}><code>{eventName}</code><Button type="button" variant="ghost" size="sm" aria-label={`Copy ${eventName} webhook event`} onClick={() => void copyValue(eventName, eventName)}>Copy</Button></li>)}
+              </ul>
+            </details>
+            {mode === "test" && !active?.webhook_verified && <div className="webhook-verify-guide" aria-labelledby="webhook-verify-title">
+              <strong id="webhook-verify-title">Temporary verification event</strong>
+              <div className="webhook-diagnostic-event"><span><code>product.created</code></span><Button type="button" variant="secondary" size="sm" aria-label="Copy product.created verification event" onClick={() => void copyValue("product.created", "Verification event")}>Copy event</Button></div>
+              <p className="form-note">Agora verifies the real Stripe signature and ignores this catalog event. It creates no payment. Remove <code>product.created</code> from the endpoint after verification.</p>
+            </div>}
+            {active?.webhook_verified && <p className="webhook-verify-guide is-verified" role="status">A signed Stripe {mode} event was received and verified. You can check the endpoint’s delivery history in Stripe Dashboard → Workbench → Webhooks.</p>}
           </div>
-          {mode === "test" && <div className="webhook-endpoint stripe-cli-steps">
-            <div><strong>Or verify with Stripe CLI</strong><p>In one terminal, run the listener and paste its temporary <code>whsec_…</code> value into the test webhook secret field. In a second terminal, trigger a harmless test event. Keep the listener running while testing.</p></div>
-            <div className="copyable-value"><code>{listenerCommand}</code><Button variant="secondary" size="sm" onClick={() => copyCommand(listenerCommand, "Listener command")}>Copy command</Button></div>
-            <div className="copyable-value"><code>{triggerCommand}</code><Button variant="secondary" size="sm" onClick={() => copyCommand(triggerCommand, "Test event command")}>Copy command</Button></div>
+          {mode === "test" && <details className="webhook-endpoint stripe-cli-steps">
+            <summary>Optional: Stripe CLI verification</summary>
+            <div><p>For local development, run the listener and paste its temporary <code>whsec_…</code> value into the test webhook secret field. Keep the listener running while testing.</p></div>
+            <div className="copyable-value"><code>{listenerCommand}</code><Button type="button" variant="secondary" size="sm" onClick={() => void copyValue(listenerCommand, "Listener command")}>Copy command</Button></div>
+            <div className="copyable-value"><code>{triggerCommand}</code><Button type="button" variant="secondary" size="sm" onClick={() => void copyValue(triggerCommand, "Test event command")}>Copy command</Button></div>
             <small>Stripe CLI must be authenticated to the same Stripe account in test mode. For a local TLS certificate error only, add <code>--skip-verify</code> to the listener command.</small>
-          </div>}
+          </details>}
           <form className="form-stack stripe-setup-form" onSubmit={save}>
             <div className="field">
               <Label htmlFor="agora-public-origin">Public app URL</Label>

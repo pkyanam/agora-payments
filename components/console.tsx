@@ -1294,7 +1294,7 @@ export default function Console() {
                       <PasswordChangeForm onChanged={finishPasswordChange} />
                     </section>
                     <StripeSetup onChange={() => void load()} />
-                    <InstallationPanel version={data.current_version} target={data.deployment_target} />
+                    <InstallationPanel version={data.current_version} target={data.deployment_target} hosting={data.deployment_hosting} />
                   </> : <p role="status">Only the workspace owner can change workspace settings.</p>}
                 </>
               )}

@@ -1745,7 +1745,29 @@ body [data-slot="badge"] {
   overflow-wrap: anywhere;
   font-size: 12px;
 }
+.webhook-dashboard-setup { display: grid; gap: 16px; }
+.webhook-dashboard-setup > div:first-child > strong { display: block; margin-bottom: 6px; }
+.webhook-setup-steps { display: grid; gap: 7px; margin: 8px 0 0; padding-left: 20px; color: #444; font-size: 13px; line-height: 1.5; }
+.webhook-event-group { padding-top: 14px; border-top: 1px solid #e4e4e4; }
+.webhook-event-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.webhook-event-heading p { margin: 4px 0 0; color: #555; font-size: 12px; }
+.webhook-event-list { display: grid; gap: 2px; margin: 7px 0 0; padding: 0; list-style: none; }
+.webhook-event-list li { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 0; }
+.webhook-event-list li code { min-width: 0; overflow-wrap: anywhere; }
+.webhook-event-list [data-slot="button"] { min-height: 32px; }
+.webhook-optional-events { padding-top: 10px; border-top: 1px solid #e4e4e4; }
+.webhook-optional-events > summary, .stripe-cli-steps > summary { cursor: pointer; font-size: 13px; font-weight: 550; }
+.webhook-optional-events > p { margin: 8px 0; color: #555; font-size: 12px; }
+.webhook-verify-guide { padding: 12px; border: 1px solid #e3e3e3; border-radius: 8px; background: #fff; font-size: 13px; }
+.webhook-verify-guide > strong { display: block; margin-bottom: 8px; }
+.webhook-verify-guide p { margin: 8px 0 0; color: #555; font-size: 12px; line-height: 1.5; }
+.webhook-verify-guide.is-verified { border-color: #c8d8ca; background: #f5faf6; }
+.webhook-diagnostic-event { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.webhook-diagnostic-event > span { display: grid; gap: 3px; }
+.webhook-event-heading > div { min-width: 0; }
 .stripe-cli-steps .copyable-value + .copyable-value { margin-top: 10px; }
+.stripe-cli-steps { margin-top: 12px; }
+.stripe-cli-steps > div { margin-top: 10px; }
 .stripe-cli-steps > small { display: block; margin-top: 12px; color: #555; font-size: 12px; }
 .outgoing-webhooks { margin: 30px 0; padding-top: 24px; border-top: 1px solid #eee; }
 .outgoing-webhooks > .section-heading p,
@@ -1885,6 +1907,8 @@ body [data-slot="badge"] {
   margin: 0;
   color: #555;
 }
+.installation-cli-option { display: grid; justify-items: start; gap: 10px; }
+.installation-cli-option > summary { cursor: pointer; color: #444; font-size: 13px; }
 .text-button {
   display: block;
   min-height: 44px;

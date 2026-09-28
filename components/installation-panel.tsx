@@ -3,9 +3,12 @@
 import { Button } from "@/components/ui/button"
 import { toast } from "sonner"
 
-export function InstallationPanel({ version, target }: { version?: string; target?: string }) {
+export function InstallationPanel({ version, target, hosting }: { version?: string; target?: string; hosting?: string }) {
   const resolvedTarget = (target || "node").toLowerCase()
-  const label = resolvedTarget === "node" || resolvedTarget === "local"
+  const isBoat = hosting === "boat"
+  const label = isBoat
+    ? "Boat sandbox"
+    : resolvedTarget === "node" || resolvedTarget === "local"
     ? "Self-hosted · Node.js"
     : resolvedTarget === "cloudflare-worker" || resolvedTarget === "cloudflare"
       ? "Cloudflare Workers"
@@ -13,11 +16,15 @@ export function InstallationPanel({ version, target }: { version?: string; targe
         ? "Vercel · experimental hosted"
         : target || "Self-hosted"
   const local = resolvedTarget === "node" || resolvedTarget === "local"
-  const command = 'agora server update --dir "$HOME/.local/share/agora"'
-  const copyUpdateCommand = async () => {
+  const installerManaged = local || isBoat
+  const command = isBoat
+    ? "curl -fsSL https://raw.githubusercontent.com/pkyanam/agora-payments/main/community-install.sh | bash -s -- --target boat"
+    : "curl -fsSL https://raw.githubusercontent.com/pkyanam/agora-payments/main/community-install.sh | bash"
+  const cliCommand = 'agora server update --dir "$HOME/.local/share/agora"'
+  const copyCommand = async (value: string, label: string) => {
     try {
-      await navigator.clipboard.writeText(command)
-      toast.success("Update command copied")
+      await navigator.clipboard.writeText(value)
+      toast.success(`${label} copied`)
     } catch {
       toast.error("Clipboard unavailable. Select and copy the command.")
     }
@@ -36,12 +43,12 @@ export function InstallationPanel({ version, target }: { version?: string; targe
         <div><dt>Current version</dt><dd>{version || "Version unavailable"}</dd></div>
         <div><dt>Deployment target</dt><dd>{label}</dd></div>
       </dl>
-      {local ? (
+      {installerManaged ? (
         <div className="installation-update">
-          <div><strong>Update from the host terminal</strong><p>The updater stages a new release, backs up the SQLite database, and rolls back if the update fails. It does not run inside this browser.</p></div>
+          <div><strong>Update with the installer</strong><p>{isBoat ? "Run this on your Mac with Boat CLI signed in, then choose the same sandbox. The installer snapshots Agora and rolls back if the new release fails its health check; it keeps your account and configuration." : "Rerun this installer on the host to update Agora. It asks before updating (Yes by default); add --non-interactive to update automatically. The installer backs up the database and rolls back if the new release fails its health check. Reuse your original --dir value if you installed into a custom directory."}</p></div>
           <code>{command}</code>
-          <Button type="button" variant="secondary" onClick={() => void copyUpdateCommand()}>Copy update command</Button>
-          <p className="form-note">This command assumes the default install directory. If you selected a custom directory during installation, replace the path after <code>--dir</code>.</p>
+          <Button type="button" variant="secondary" onClick={() => void copyCommand(command, "Installer command")}>Copy installer command</Button>
+          {local && <details className="installation-cli-option"><summary>Optional: update with the Agora CLI</summary><code>{cliCommand}</code><Button type="button" variant="ghost" onClick={() => void copyCommand(cliCommand, "CLI update command")}>Copy CLI command</Button></details>}
         </div>
       ) : (
         <div className="installation-update">
