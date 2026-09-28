@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Agora managed CLI (pkyanam/agora-cli)
 // No dependencies. No implicit retries. No credentials in command arguments.
-import { chmod, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
 import { spawn } from "node:child_process"
+import { createHmac, timingSafeEqual } from "node:crypto"
 import os from "node:os"
 import path from "node:path"
 
@@ -18,6 +19,9 @@ Environment variables AGORA_URL and AGORA_API_KEY override that saved profile.
   agora auth logout
   agora server status --dir /absolute/path/to/agora
   agora server update --dir /absolute/path/to/agora
+  agora webhooks verify --secret-file /secure/path/secret --body-file request.json \\
+    --timestamp 1790610000 --signature 'v1=…' --event-id evt_… \\
+    --delivery-id whd_… --event-type payment.succeeded
 
   agora products list
   agora products create --name "Studio" --amount 4900 --idempotency-key product-1
@@ -34,6 +38,65 @@ A payment reconciliation is safe to repeat and does not require an idempotency k
 A refund can return requires_approval; it has NOT executed in that state. A pending refund still awaits provider confirmation.
 Output is JSON; errors go to stderr with a nonzero exit status. Test-mode transactions do not move money.
 `
+
+if (args[0] === "webhooks") {
+  try {
+    if (args.includes("--help")) {
+      console.log(help)
+      process.exit(0)
+    }
+    const action = args[1]
+    const flags = {}
+    for (let i = 2; i < args.length; i += 2) {
+      if (!args[i]?.startsWith("--") || !args[i + 1] || (args[i + 1].startsWith("--") && args[i + 1] !== "-")) {
+        throw new Error("Flags require values. Use `agora webhooks verify --help`.")
+      }
+      flags[args[i].slice(2)] = args[i + 1]
+    }
+    if (action !== "verify") throw new Error("Use `agora webhooks verify` to validate a signed delivery.")
+    if (!flags["secret-file"] || !path.isAbsolute(flags["secret-file"])) throw new Error("Provide an absolute --secret-file path. Keep the file owner-only.")
+    if (!flags["body-file"] || !flags.timestamp || !flags.signature || !flags["event-id"] || !flags["delivery-id"] || !flags["event-type"]) {
+      throw new Error("Provide --body-file, --timestamp, --signature, --event-id, --delivery-id, and --event-type from the Agora request headers.")
+    }
+    const secretPath = flags["secret-file"]
+    const secretInfo = await lstat(secretPath)
+    if (secretInfo.isSymbolicLink() || !secretInfo.isFile() || (secretInfo.mode & 0o077) !== 0 || (process.getuid && secretInfo.uid !== process.getuid())) {
+      throw new Error("Webhook secret file must be a regular file owned by this user with no group or other permissions (chmod 600).")
+    }
+    const secret = (await readFile(secretPath, "utf8")).replace(/\r?\n$/, "")
+    if (!secret) throw new Error("Webhook secret file is empty.")
+    const rawBody = flags["body-file"] === "-" ? await new Promise((resolve, reject) => {
+      const chunks = []
+      process.stdin.on("data", (chunk) => chunks.push(Buffer.from(chunk)))
+      process.stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")))
+      process.stdin.on("error", reject)
+    }) : await readFile(flags["body-file"], "utf8")
+    const timestamp = flags.timestamp
+    const signature = flags.signature
+    if (!/^\d+$/.test(timestamp) || !Number.isSafeInteger(Number(timestamp)) || Math.abs(Math.floor(Date.now() / 1000) - Number(timestamp)) > 300) {
+      throw new Error("Webhook timestamp is invalid or outside the 5-minute verification window.")
+    }
+    if (!/^v1=[a-f0-9]{64}$/.test(signature)) throw new Error("Agora webhook signature has an invalid format.")
+    const expected = createHmac("sha256", secret).update(`${timestamp}.${rawBody}`, "utf8").digest()
+    const received = Buffer.from(signature.slice(3), "hex")
+    if (expected.length !== received.length || !timingSafeEqual(expected, received)) throw new Error("Webhook signature does not match the exact request body.")
+    let event
+    try { event = JSON.parse(rawBody) } catch { throw new Error("Signature is valid, but the webhook body is not valid JSON.") }
+    if (!event || event.id !== flags["event-id"] || event.type !== flags["event-type"]) throw new Error("Signed event ID/type do not match the Agora request headers.")
+    console.log(JSON.stringify({
+      verified: true,
+      timestamp: Number(timestamp),
+      event_id: flags["event-id"],
+      delivery_id: flags["delivery-id"],
+      event_type: flags["event-type"],
+      event,
+    }, null, 2))
+    process.exit(0)
+  } catch (error) {
+    console.error(JSON.stringify({ error: { code: "webhook_verification_failed", message: error.message } }, null, 2))
+    process.exit(1)
+  }
+}
 
 if (args[0] === "server") {
   try {

@@ -56,14 +56,11 @@ Open [https://agora-payments.vercel.app](https://agora-payments.vercel.app) for 
 
 ## Use the API or CLI
 
-The CLI reads its URL and merchant API key from environment variables. It does not save credentials for you. Set the URL to the hosted app or your local server, and use a scoped key issued for your merchant account. Each key is pinned to the provider mode selected when it was created; issue a new key when switching between sandbox, Stripe test, or Stripe live modes.
+Use the Developers page to create a scoped, mode-bound Agora API key. From a terminal, run the origin-specific command it provides (or replace the URL with your own deployment). The CLI accepts the key in a hidden prompt and stores it in a mode-0600 local configuration; use environment variables for short-lived scripts. The key is issued by Agora and is separate from your Stripe provider credentials.
 
 ```bash
-export AGORA_URL='https://agora-payments.vercel.app'
-printf 'Agora API key: ' >&2
-read -r -s AGORA_API_KEY
-printf '\n' >&2
-export AGORA_API_KEY
+agora auth login --url 'https://agora-payments.vercel.app'
+agora auth status
 agora products list
 agora products create --name 'Studio license' --amount 4900 --idempotency-key product-studio-v1
 agora payments create --product prod_... --customer 'Alex' --idempotency-key order-001  # only after provider readiness
@@ -73,6 +70,8 @@ agora refunds create --payment pay_... --amount 4900 --reason 'Customer request'
 ```
 
 Amounts are integer cents: `4900` means `$49.00`. Use a unique idempotency key for each new create or refund and reuse it only when retrying the same request. Payment reconciliation is safe to repeat and does not require a key. API keys are shown once; store them in a secret manager or a short-lived shell environment, never in source control. The server selects the mode pinned to each key. A `pending` refund still awaits provider confirmation, and `requires_approval` is only a request. Do not use the payment or refund commands against the canonical workspace until its readiness status is **Ready** and the merchant’s own provider account is verified.
+
+Outgoing webhook endpoints are managed from the owner console. Deliveries carry signed timestamps, event IDs, delivery IDs, and event types. The standalone CLI and TypeScript SDK include a verifier; verify the exact raw request body before parsing it. Delivery is at-least-once, so receivers should deduplicate by event ID and tolerate retries.
 
 Use `agora --help` for the full command list. The versioned REST API is documented in the Developers section of the console and at `/api-reference`.
 
