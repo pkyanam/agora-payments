@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Agora Community local installer. Re-runs preserve installation state and never reset data.
 set -euo pipefail
+has_interactive_tty() { [[ -r /dev/tty ]] && ( true </dev/tty ) 2>/dev/null; }
 ORIGINAL_ARGS=("$@")
 for ((i = 0; i + 1 < ${#ORIGINAL_ARGS[@]}; i++)); do
   if [[ "${ORIGINAL_ARGS[$i]}" == --target && "${ORIGINAL_ARGS[$((i + 1))]}" == cloudflare ]]; then
@@ -55,7 +56,7 @@ while (($#)); do
   esac
 done
 
-if ((!TARGET_SET && !NON_INTERACTIVE)) && [[ -r /dev/tty ]]; then
+if ((TARGET_SET == 0 && NON_INTERACTIVE == 0)) && has_interactive_tty; then
   printf 'Install target [local/cloudflare] (local): ' > /dev/tty
   IFS= read -r TARGET_ANSWER < /dev/tty || TARGET_ANSWER=
   TARGET="${TARGET_ANSWER:-local}"
@@ -82,7 +83,7 @@ if [[ "$ORIGIN" == http://localhost:* || "$ORIGIN" == http://127.0.0.1:* || "$OR
   if ((PORT_SET)); then [[ "$PORT" == "$ORIGIN_PORT" ]] || { printf 'Loopback URL port %s must match --port %s.\n' "$ORIGIN_PORT" "$PORT" >&2; exit 2; }
   else PORT="$ORIGIN_PORT"; fi
 fi
-if [[ -z "$OWNER_EMAIL" && ! $NON_INTERACTIVE -eq 1 && -r /dev/tty ]]; then
+if [[ -z "$OWNER_EMAIL" ]] && ((NON_INTERACTIVE == 0)) && has_interactive_tty; then
   printf 'Owner email: ' > /dev/tty
   IFS= read -r OWNER_EMAIL < /dev/tty || OWNER_EMAIL=
 fi

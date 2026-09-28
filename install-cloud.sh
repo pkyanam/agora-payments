@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Deploy Agora's single-workspace API to a Cloudflare Worker + SQLite Durable Object.
 set -euo pipefail
+has_interactive_tty() { [[ -r /dev/tty ]] && ( true </dev/tty ) 2>/dev/null; }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "$ROOT"
@@ -51,7 +52,7 @@ done
 
 if [[ -z "$WORKER_NAME" ]]; then
   if ((NON_INTERACTIVE)); then echo '--worker-name is required with --non-interactive.' >&2; exit 2; fi
-  [[ -r /dev/tty ]] || { echo 'An interactive terminal is required to choose a Worker name, or pass --worker-name.' >&2; exit 2; }
+  has_interactive_tty || { echo 'An interactive terminal is required to choose a Worker name, or pass --worker-name.' >&2; exit 2; }
   suffix="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(3).toString("hex"))')"
   WORKER_NAME="agora-community-$suffix"
   printf 'Cloudflare Worker name [%s]: ' "$WORKER_NAME" > /dev/tty
@@ -60,13 +61,13 @@ if [[ -z "$WORKER_NAME" ]]; then
 fi
 [[ "$WORKER_NAME" =~ ^[a-z0-9][a-z0-9-]{1,55}$ ]] || { echo 'Worker name must be 2–56 lowercase letters, digits, or hyphens.' >&2; exit 2; }
 
-if [[ -z "$OWNER_EMAIL" && ! $NON_INTERACTIVE -eq 1 && -r /dev/tty ]]; then
+if [[ -z "$OWNER_EMAIL" ]] && ((NON_INTERACTIVE == 0)) && has_interactive_tty; then
   printf 'Owner email: ' > /dev/tty
   IFS= read -r OWNER_EMAIL < /dev/tty || OWNER_EMAIL=
 fi
 [[ "$OWNER_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || { echo 'Provide a valid --owner-email.' >&2; exit 2; }
 
-if [[ -z "$PUBLIC_ORIGIN" && ! $NON_INTERACTIVE -eq 1 && -r /dev/tty ]]; then
+if [[ -z "$PUBLIC_ORIGIN" ]] && ((NON_INTERACTIVE == 0)) && has_interactive_tty; then
   printf 'Public UI origin (HTTPS, leave blank for the new Vercel alias): ' > /dev/tty
   IFS= read -r PUBLIC_ORIGIN < /dev/tty || PUBLIC_ORIGIN=
 fi
