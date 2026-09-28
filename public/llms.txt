@@ -5,7 +5,7 @@ Agora is a hosted payment workflow preview with an isolated Stripe TEST-mode API
 - REST base: https://agora-payments.vercel.app/api/v1
 - API reference: https://agora-payments.vercel.app/api-reference
 - OpenAPI 3.1: https://agora-payments.vercel.app/openapi.json
-- CLI installer (private prerelease; requires `gh auth login` and repository access): `gh api repos/pkyanam/agora-cli/contents/install.sh -H 'Accept: application/vnd.github.raw+json' | bash`
+- CLI installer (private prerelease; requires `gh auth login` and repository access): `(set -o pipefail; gh api repos/pkyanam/agora-cli/contents/install.sh -H 'Accept: application/vnd.github.raw+json' | bash)`
 - CLI source: https://github.com/pkyanam/agora-cli
 - Authentication: `Authorization: Bearer $AGORA_API_KEY`; keys are scoped to one merchant and one provider mode.
 - Never place API keys in browser code. Treat the key as a secret and revoke it if exposed.
