@@ -85,17 +85,17 @@ export function RiskSignals({ preferredMode }: { preferredMode?: "test" | "live"
 
   return <section className="risk-signals" aria-labelledby="risk-signals-title">
     <div className="section-heading risk-signals-heading">
-      <div><h2 id="risk-signals-title">Stripe risk signals</h2><p>Verified Radar warnings and Stripe Review events mapped to Agora payments.</p></div>
+      <div><h2 id="risk-signals-title">Risk alerts</h2><p>Radar warnings and Stripe reviews linked to your payments.</p></div>
       <div className="risk-mode-controls" role="group" aria-label="Risk signal payment mode">
         <Button type="button" size="sm" variant={mode === "test" ? "secondary" : "ghost"} aria-pressed={mode === "test"} onClick={() => setMode("test")}>Test mode</Button>
         <Button type="button" size="sm" variant={mode === "live" ? "secondary" : "ghost"} aria-pressed={mode === "live"} onClick={() => setMode("live")}>Live mode</Button>
       </div>
     </div>
-    <p className="form-note" role="note">Only mapped, signed Stripe signals appear here. No signal is not a risk assessment.</p>
+    <p className="form-note" role="note">Only verified, signed alerts linked to Agora payments appear here. No alerts doesn’t mean no risk.</p>
     {status === "unconfigured" && <p className="risk-status" role="status">Stripe webhook setup is not configured for {mode} mode.</p>}
     {status === "awaiting_verification" && <p className="risk-status" role="status">Waiting for a valid signed Stripe webhook in {mode} mode before showing signals.</p>}
     {error && <p className="risk-status" role="alert">{error} <Button type="button" variant="ghost" size="sm" onClick={() => setReloadToken((value) => value + 1)}>Retry</Button></p>}
-    {loading && items.length === 0 ? <p role="status">Loading signals…</p> : items.length === 0 ? status === "ready" ? <p className="empty-row">No mapped Radar warnings or Reviews received in {mode} mode.</p> : null : <div className="risk-signal-list">
+    {loading && items.length === 0 ? <p role="status">Loading signals…</p> : items.length === 0 ? status === "ready" ? <p className="empty-row">No alerts received in {mode} mode.</p> : null : <div className="risk-signal-list">
       {items.map((signal) => <details className="risk-signal-card" key={`${mode}-${signal.id}`}>
         <summary className="risk-signal-title"><strong>{signal.kind === "early_fraud_warning" ? "Early fraud warning" : "Stripe Review"}</strong><span className={`risk-state risk-state-${signal.state}`}>{signal.state.replaceAll("_", " ")}</span><time dateTime={signal.updated_at}>{when(signal.updated_at)}</time></summary>
         <dl>
