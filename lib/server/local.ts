@@ -1,0 +1,21 @@
+import { createService } from './service';
+import { localStore } from './db';
+
+const service=createService(localStore);
+export const owner=service.owner;
+export const authenticate=service.authenticate;
+export const beginAdminLogin=service.beginAdminLogin;
+export const enrollAdminMfa=service.enrollAdminMfa;
+export const verifyAdminMfa=service.verifyAdminMfa;
+export const authSession=service.authSession;
+export const mutate=service.mutate;
+export const createProduct=service.createProduct;
+export const createPayment=service.createPayment;
+export const createRefund=service.createRefund;
+export const resolveApproval=service.resolveApproval;
+export const createCredential=service.createCredential;
+export const revokeCredential=service.revokeCredential;
+export const simulate=service.simulate;
+export const snapshot=service.snapshot;
+export { ApiError, bodyOf, consoleAuth, hasAdminSession, setSessionCookie, requireSameOrigin, responseError, requireScope, scopes } from './service';
+export { setMfaCookie } from './admin-auth';

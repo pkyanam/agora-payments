@@ -1,0 +1,19 @@
+# Agora sandbox
+
+Agora is a local payment-acceptance simulator for a single merchant workspace.
+No real cards or money. It is not an agent wallet or card issuer.
+
+- OpenAPI: /openapi.json
+- Human documentation: /api-reference
+- REST base: /api/v1
+- Authentication: Authorization: Bearer <scoped sandbox key>
+- POST requests require a stable Idempotency-Key, reused on retries.
+- All amounts: integer USD cents.
+- Create a checkout: POST /api/v1/payments {"product_id":"prod_studio"}.
+- Complete that checkout only using the explicit sandbox checkout UI.
+- Refund: POST /api/v1/refunds with payment_id, amount, and reason.
+- requires_approval means no refund has executed. A human reviews it in Agents.
+- Never bypass a permission or amount limit by creating another key or splitting actions.
+- List events using GET /api/v1/events?cursor=0&limit=25. Follow next_cursor.
+- SDK: sdk/agora.ts. CLI: node cli/agora.mjs --help. Neither is published yet.
+- Do not enter or transmit real card data, CVV, bank credentials, or personal sensitive data.

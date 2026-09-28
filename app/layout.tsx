@@ -1,29 +1,25 @@
-import { Geist, Geist_Mono, Inter } from "next/font/google"
-
+import type { Metadata } from "next"
+import { Inter, Geist_Mono } from "next/font/google"
+import { Toaster } from "@/components/ui/sonner"
 import "./globals.css"
-import { ThemeProvider } from "@/components/theme-provider"
-import { cn } from "@/lib/utils";
-
-const inter = Inter({subsets:['latin'],variable:'--font-sans'})
-
-const fontMono = Geist_Mono({
-  subsets: ["latin"],
-  variable: "--font-mono",
-})
-
+const inter = Inter({ subsets: ["latin"], variable: "--font-inter" })
+const mono = Geist_Mono({ subsets: ["latin"], variable: "--font-code" })
+export const metadata: Metadata = {
+  title: "Agora payments",
+  description:
+    "Payments for your business, team, and agents. Test mode is enabled.",
+  robots: { index: false, follow: false },
+}
 export default function RootLayout({
   children,
-}: Readonly<{
+}: {
   children: React.ReactNode
-}>) {
+}) {
   return (
-    <html
-      lang="en"
-      suppressHydrationWarning
-      className={cn("antialiased", fontMono.variable, "font-sans", inter.variable)}
-    >
+    <html lang="en" className={`${inter.variable} ${mono.variable}`}>
       <body>
-        <ThemeProvider>{children}</ThemeProvider>
+        {children}
+        <Toaster position="bottom-right" />
       </body>
     </html>
   )
