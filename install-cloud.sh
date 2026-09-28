@@ -168,12 +168,12 @@ NODE
 [[ "$WORKER_URL" =~ ^https://[a-z0-9-]+\.[a-z0-9.-]+\.workers\.dev$ ]] || { echo "Could not determine the deployed Worker URL. Inspect the private Wrangler log at $STATE_DIR/worker-deploy.log." >&2; exit 1; }
 
 if ! vercel project inspect "$UI_PROJECT" --json --yes >/dev/null 2>&1; then
-  echo "Creating separate Vercel community UI project $UI_PROJECT…"
+  echo "Creating separate Vercel community UI project ${UI_PROJECT}…"
   vercel project add "$UI_PROJECT" >/dev/null
 fi
 vercel link --cwd "$DEPLOY_DIR" --project "$UI_PROJECT" --yes >/dev/null
 vercel env add AGORA_API_ORIGIN production --value "$WORKER_URL" --force --yes --project "$UI_PROJECT" --cwd "$DEPLOY_DIR" >/dev/null
-echo "Deploying the separate Vercel UI project $UI_PROJECT…"
+echo "Deploying the separate Vercel UI project ${UI_PROJECT}…"
 if ! vercel deploy "$DEPLOY_DIR" --prod --yes --project "$UI_PROJECT" --build-env "AGORA_API_ORIGIN=$WORKER_URL" --env "AGORA_API_ORIGIN=$WORKER_URL" --json > "$STATE_DIR/vercel-deploy.log" 2>&1; then
   chmod 600 "$STATE_DIR/vercel-deploy.log"
   echo 'Vercel UI deploy failed. Review its private log file and rerun the same command; Worker credentials and Durable Object data are preserved.' >&2
