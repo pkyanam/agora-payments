@@ -787,20 +787,30 @@ export default function Console() {
         ))}
       </nav>
       <div className="sidebar-bottom">
-        <Tooltip>
-          <TooltipTrigger render={<span className="sandbox-mark" tabIndex={0} role="note" aria-label={data?.provider_status === "setup_required" ? "Payment setup required" : data?.provider_status === "sandbox" ? "Test mode" : data?.mode === "stripe" ? `Stripe ${data.provider_mode || "mode unavailable"}` : "Provider mode unavailable"} />}>{data?.provider_status === "setup_required" ? "Setup required" : data?.provider_status === "sandbox" ? "Test mode" : data?.mode === "stripe" ? data.provider_mode ? `Stripe ${data.provider_mode}` : "Mode unavailable" : "Mode unavailable"}</TooltipTrigger>
-          <TooltipContent>
-            {data?.provider_status === "setup_required"
-              ? "Payment creation is disabled until required Stripe credentials and a verified webhook are configured. No simulator fallback is active."
-              : data?.provider_status === "sandbox"
-                ? "Explicit test simulation only. No live funds move."
-                : data?.mode === "stripe"
-              ? data.provider_mode
-                ? `Payments use the configured Stripe ${data.provider_mode} account. Payment status follows verified provider events.`
-                : "The payment provider mode is unavailable. Verify configuration before creating a payment."
-              : "Provider readiness has not been confirmed. Payment creation is unavailable."}
-          </TooltipContent>
-        </Tooltip>
+        {mobile ? (
+          <span
+            className="sandbox-mark"
+            role="note"
+            aria-label={data?.provider_status === "setup_required" ? "Payment setup required" : data?.provider_status === "sandbox" ? "Test mode" : data?.mode === "stripe" ? `Stripe ${data.provider_mode || "mode unavailable"}` : "Provider mode unavailable"}
+          >
+            {data?.provider_status === "setup_required" ? "Setup required" : data?.provider_status === "sandbox" ? "Test mode" : data?.mode === "stripe" ? data.provider_mode ? `Stripe ${data.provider_mode}` : "Mode unavailable" : "Mode unavailable"}
+          </span>
+        ) : (
+          <Tooltip>
+            <TooltipTrigger render={<span className="sandbox-mark" tabIndex={0} role="note" aria-label={data?.provider_status === "setup_required" ? "Payment setup required" : data?.provider_status === "sandbox" ? "Test mode" : data?.mode === "stripe" ? `Stripe ${data.provider_mode || "mode unavailable"}` : "Provider mode unavailable"} />}>{data?.provider_status === "setup_required" ? "Setup required" : data?.provider_status === "sandbox" ? "Test mode" : data?.mode === "stripe" ? data.provider_mode ? `Stripe ${data.provider_mode}` : "Mode unavailable" : "Mode unavailable"}</TooltipTrigger>
+            <TooltipContent>
+              {data?.provider_status === "setup_required"
+                ? "Payment creation is disabled until required Stripe credentials and a verified webhook are configured. No simulator fallback is active."
+                : data?.provider_status === "sandbox"
+                  ? "Explicit test simulation only. No live funds move."
+                  : data?.mode === "stripe"
+                ? data.provider_mode
+                  ? `Payments use the configured Stripe ${data.provider_mode} account. Payment status follows verified provider events.`
+                  : "The payment provider mode is unavailable. Verify configuration before creating a payment."
+                : "Provider readiness has not been confirmed. Payment creation is unavailable."}
+            </TooltipContent>
+          </Tooltip>
+        )}
         <a className="quiet-link" href="/api-reference" aria-label="API reference">
           <span className="quiet-link-label">API reference</span>
           <HugeiconsIcon icon={ArrowUpRight01Icon} size={13} aria-hidden="true" />
