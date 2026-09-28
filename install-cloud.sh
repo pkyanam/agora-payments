@@ -51,17 +51,25 @@ done
 
 if [[ -z "$WORKER_NAME" ]]; then
   if ((NON_INTERACTIVE)); then echo '--worker-name is required with --non-interactive.' >&2; exit 2; fi
+  [[ -r /dev/tty ]] || { echo 'An interactive terminal is required to choose a Worker name, or pass --worker-name.' >&2; exit 2; }
   suffix="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(3).toString("hex"))')"
   WORKER_NAME="agora-community-$suffix"
-  read -r -p "Cloudflare Worker name [$WORKER_NAME]: " answer
+  printf 'Cloudflare Worker name [%s]: ' "$WORKER_NAME" > /dev/tty
+  IFS= read -r answer < /dev/tty || answer=
   WORKER_NAME="${answer:-$WORKER_NAME}"
 fi
 [[ "$WORKER_NAME" =~ ^[a-z0-9][a-z0-9-]{1,55}$ ]] || { echo 'Worker name must be 2–56 lowercase letters, digits, or hyphens.' >&2; exit 2; }
 
-if [[ -z "$OWNER_EMAIL" && ! $NON_INTERACTIVE -eq 1 && -t 0 ]]; then read -r -p 'Owner email: ' OWNER_EMAIL; fi
+if [[ -z "$OWNER_EMAIL" && ! $NON_INTERACTIVE -eq 1 && -r /dev/tty ]]; then
+  printf 'Owner email: ' > /dev/tty
+  IFS= read -r OWNER_EMAIL < /dev/tty || OWNER_EMAIL=
+fi
 [[ "$OWNER_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || { echo 'Provide a valid --owner-email.' >&2; exit 2; }
 
-if [[ -z "$PUBLIC_ORIGIN" && ! $NON_INTERACTIVE -eq 1 && -t 0 ]]; then read -r -p 'Public UI origin (HTTPS): ' PUBLIC_ORIGIN; fi
+if [[ -z "$PUBLIC_ORIGIN" && ! $NON_INTERACTIVE -eq 1 && -r /dev/tty ]]; then
+  printf 'Public UI origin (HTTPS, leave blank for the new Vercel alias): ' > /dev/tty
+  IFS= read -r PUBLIC_ORIGIN < /dev/tty || PUBLIC_ORIGIN=
+fi
 if [[ -n "$PUBLIC_ORIGIN" ]]; then PUBLIC_ORIGIN="$(node --input-type=module - "$PUBLIC_ORIGIN" <<'NODE'
 const raw=process.argv[2];let u;try{u=new URL(raw)}catch{throw new Error('Provide the HTTPS origin of the browser UI.')}
 if(u.protocol!=='https:'||u.username||u.password||u.pathname!=='/'||u.search||u.hash)throw new Error('Use an HTTPS origin without credentials, path, query, or fragment.');

@@ -10,6 +10,7 @@ for ((i = 0; i + 1 < ${#ORIGINAL_ARGS[@]}; i++)); do
 done
 
 TARGET=local
+TARGET_SET=0
 APP_DIR="${AGORA_INSTALL_DIR:-${HOME:?HOME is required}/.local/share/agora}"
 ORIGIN=http://localhost:3000
 OWNER_EMAIL=
@@ -41,7 +42,7 @@ USAGE
 
 while (($#)); do
   case "$1" in
-    --target) TARGET="${2:?Missing value for --target}"; shift 2 ;;
+    --target) TARGET="${2:?Missing value for --target}"; TARGET_SET=1; shift 2 ;;
     --dir) APP_DIR="${2:?Missing value for --dir}"; shift 2 ;;
     --url) ORIGIN="${2:?Missing value for --url}"; shift 2 ;;
     --owner-email) OWNER_EMAIL="${2:?Missing value for --owner-email}"; shift 2 ;;
@@ -53,6 +54,12 @@ while (($#)); do
     *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+if ((!TARGET_SET && !NON_INTERACTIVE)) && [[ -r /dev/tty ]]; then
+  printf 'Install target [local/cloudflare] (local): ' > /dev/tty
+  IFS= read -r TARGET_ANSWER < /dev/tty || TARGET_ANSWER=
+  TARGET="${TARGET_ANSWER:-local}"
+fi
 
 if [[ "$TARGET" == cloudflare ]]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -75,7 +82,10 @@ if [[ "$ORIGIN" == http://localhost:* || "$ORIGIN" == http://127.0.0.1:* || "$OR
   if ((PORT_SET)); then [[ "$PORT" == "$ORIGIN_PORT" ]] || { printf 'Loopback URL port %s must match --port %s.\n' "$ORIGIN_PORT" "$PORT" >&2; exit 2; }
   else PORT="$ORIGIN_PORT"; fi
 fi
-if [[ -z "$OWNER_EMAIL" && -t 0 && ! $NON_INTERACTIVE -eq 1 ]]; then read -r -p 'Owner email: ' OWNER_EMAIL; fi
+if [[ -z "$OWNER_EMAIL" && ! $NON_INTERACTIVE -eq 1 && -r /dev/tty ]]; then
+  printf 'Owner email: ' > /dev/tty
+  IFS= read -r OWNER_EMAIL < /dev/tty || OWNER_EMAIL=
+fi
 if [[ -z "$OWNER_EMAIL" ]]; then
   if ((NON_INTERACTIVE)); then printf '%s\n' '--owner-email is required with --non-interactive.' >&2; else printf '%s\n' 'Owner email is required when stdin is not a terminal.' >&2; fi
   exit 2
