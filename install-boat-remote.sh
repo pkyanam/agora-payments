@@ -74,16 +74,18 @@ wait_for_health() {
 route_origin() {
 node --input-type=module - "$1" "$PORT" 2>/dev/null <<'NODE'
 const raw=process.argv[2],port=process.argv[3];
-const urls=raw.match(/https:\/\/[A-Za-z0-9.-]+\.on\.boat\.dev(?:\/[^\s]*)?/g)||[];
+const urls=raw.match(/https:\/\/[A-Za-z0-9.-]+\.on\.(?:ascii|boat)\.dev(?:\/[^\s]*)?/g)||[];
 if(urls.length===0)throw new Error('Boat host did not return a public HTTPS URL.');
 const u=new URL(urls[urls.length-1]);
-if(u.protocol!=='https:'||!u.hostname.endsWith(`-${port}.on.boat.dev`)||u.pathname!=='/'||u.hash)throw new Error('Boat returned a URL that does not match the requested host port.');
+const suffix=['.on.ascii.dev','.on.boat.dev'].find(s=>u.hostname.endsWith(`-${port}${s}`));
+if(u.protocol!=='https:'||u.username||u.password||!suffix||u.hostname.length<=suffix.length+String(port).length+1||u.pathname!=='/'||u.hash)throw new Error('Boat returned a URL that does not match the requested host port.');
 console.log(u.origin);
 NODE
 }
 host_publicly() {
   local output origin
-  output="$(host "$PORT" --public 2>&1)" || fail 'Boat could not enable the public HTTPS route.'
+  host "$PORT" --public >/dev/null 2>&1 || fail 'Boat could not enable the public HTTPS route.'
+  output="$(host url "$PORT" --timeout 30 --public 2>&1)" || { host hide "$PORT" >/dev/null 2>&1 || true; fail 'Boat could not confirm that its public HTTPS route is ready.'; }
   origin="$(route_origin "$output")" || { host hide "$PORT" >/dev/null 2>&1 || true; fail 'Boat returned an unexpected public URL; the route was hidden.'; }
   [[ "$origin" == "$PUBLIC_ORIGIN" ]] || { host hide "$PORT" >/dev/null 2>&1 || true; fail 'Boat host URL changed unexpectedly; the route was hidden.'; }
   [[ "$output" != *"_token="* ]] || { host hide "$PORT" >/dev/null 2>&1 || true; fail 'Boat returned a token-gated URL after public access was requested; the route was hidden.'; }
@@ -208,7 +210,7 @@ if [[ -f "$APP_DIR/install.json" ]]; then
   existing="$(read_manifest)" || fail 'The existing Agora manifest is not compatible with Boat hosting.'
   PORT="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).port))' "$existing")"
   PUBLIC_ORIGIN="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).origin))' "$existing")"
-  [[ "$PUBLIC_ORIGIN" == https://*.on.boat.dev ]] || fail 'The saved canonical origin is not a Boat HTTPS URL.'
+  [[ "$PUBLIC_ORIGIN" == https://*.on.ascii.dev || "$PUBLIC_ORIGIN" == https://*.on.boat.dev ]] || fail 'The saved canonical origin is not a Boat HTTPS URL.'
   saved_email="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).owner_email))' "$existing")"
   if [[ -n "$OWNER_EMAIL" && "$OWNER_EMAIL" != "$saved_email" ]]; then fail 'Owner email differs from the existing installation; refusing to change its credentials.'; fi
   [[ -x "$APP_DIR/start.sh" && -x "$APP_DIR/update.sh" ]] || fail 'Existing installation is missing its managed start/update scripts.'
@@ -242,8 +244,9 @@ for _ in {1..20}; do
   sleep 0.25
 done
 ((ready)) || fail 'Could not prepare the temporary Boat host check.'
-private_output="$(host "$PORT" 2>&1)" || { host hide "$PORT" >/dev/null 2>&1 || true; fail 'Boat could not create a private host route.'; }
+host "$PORT" --private >/dev/null 2>&1 || { host hide "$PORT" >/dev/null 2>&1 || true; fail 'Boat could not create a private host route.'; }
 ROUTE_PENDING=1
+private_output="$(host url "$PORT" --timeout 30 --private 2>&1)" || { host hide "$PORT" >/dev/null 2>&1 || true; fail 'Boat could not resolve its private HTTPS route.'; }
 PUBLIC_ORIGIN="$(route_origin "$private_output")" || fail 'Boat did not return a stable HTTPS host URL.'
 kill "$TEMP_PID" 2>/dev/null || true
 wait "$TEMP_PID" 2>/dev/null || true

@@ -159,16 +159,19 @@ MOCK
 cat > "$MOCK_BIN/host" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "${1:-}" == --help ]]; then printf 'host PORT [--public] ; host hide PORT\n'; exit 0; fi
+if [[ "${1:-}" == --help ]]; then printf 'host PORT [--private|--public]; host url PORT [--timeout 30] [--private|--public]; host hide PORT\n'; exit 0; fi
 if [[ "$1" == hide ]]; then printf 'host hide\n' >> "$TEST_LOG"; exit 0; fi
+if [[ "$1" == url ]]; then
+  port="$2"
+  if [[ "${*:3}" == *--public* ]]; then printf 'host url public\n' >> "$TEST_LOG"; printf 'https://bx-test-123-%s.on.ascii.dev\n' "$port"; else printf 'host url private\n' >> "$TEST_LOG"; printf 'https://bx-test-123-%s.on.ascii.dev?_token=mock-private-token\n' "$port"; fi
+  exit 0
+fi
 port="$1"
-if [[ "${2:-}" == --public ]]; then
+if [[ "${*:2}" == *--public* ]]; then
   "$REAL_NODE" -e 'fetch(`http://127.0.0.1:${process.argv[1]}/api/health`).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' "$port"
   printf 'host public\n' >> "$TEST_LOG"
-  printf 'https://bx-test-123-%s.on.boat.dev\n' "$port"
 else
   printf 'host private\n' >> "$TEST_LOG"
-  printf 'https://bx-test-123-%s.on.boat.dev?_token=mock-private-token\n' "$port"
 fi
 MOCK
 
@@ -181,7 +184,7 @@ export PATH="$MOCK_BIN:/usr/bin:/bin:$PATH"
 export TEST_APP_DIR="$HOME/agora-install"
 
 OUTPUT="$(bash "$ROOT/install.sh" --target boat --boat-id bx_test123 --owner-email "$EMAIL" --dir "$HOME/agora-install" --port "$PORT" --non-interactive)"
-[[ "$OUTPUT" == *"https://bx-test-123-$PORT.on.boat.dev"* ]]
+[[ "$OUTPUT" == *"https://bx-test-123-$PORT.on.ascii.dev"* ]]
 [[ "$OUTPUT" != *mock-private-token* && "$OUTPUT" != *"Password:"* ]]
 [[ ! -e "$STATE/injected" ]]
 [[ "$(cat "$HOME/agora-install/install.json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).owner_email))')" == "$EMAIL" ]]
@@ -190,7 +193,7 @@ OUTPUT="$(bash "$ROOT/install.sh" --target boat --boat-id bx_test123 --owner-ema
 
 first_installs="$(grep -c '^npm ' "$TEST_LOG" || true)"
 OUTPUT="$(bash "$ROOT/install.sh" --target boat --boat-id bx_test123 --owner-email "$EMAIL" --dir "$HOME/agora-install" --port "$PORT" --non-interactive)"
-[[ "$OUTPUT" == *"https://bx-test-123-$PORT.on.boat.dev"* ]]
+[[ "$OUTPUT" == *"https://bx-test-123-$PORT.on.ascii.dev"* ]]
 [[ "$(grep -c '^npm ' "$TEST_LOG" || true)" == "$first_installs" ]]
 
 before_update="$(wc -l < "$TEST_LOG" | tr -d ' ')"
