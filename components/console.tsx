@@ -71,6 +71,7 @@ import { Tooltip as ChartTooltip } from "@/components/dither-kit/tooltip"
 import { StripeSetup } from "@/components/stripe-setup"
 import { InstallationPanel } from "@/components/installation-panel"
 import { OutgoingWebhooks } from "@/components/outgoing-webhooks"
+import { RiskSignals } from "@/components/risk-signals"
 const money = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
     n / 100
@@ -162,6 +163,7 @@ export default function Console() {
   const pendingWrites = useRef(new Map<string, string>())
   const [view, setView] = useState<View>("Overview")
   const [data, setData] = useState<Snapshot | null>(null)
+  const [deploymentType, setDeploymentType] = useState<"community" | "hosted" | null>(null)
   const [activityRange, setActivityRange] = useState<ActivityRange>("30d")
   const [customStart, setCustomStart] = useState(() => new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10))
   const [customEnd, setCustomEnd] = useState(() => new Date().toISOString().slice(0, 10))
@@ -265,6 +267,7 @@ export default function Console() {
         throw new Error(b.error?.message || "Unable to load workspace.")
       }
       setData(b as unknown as Snapshot)
+      if (b.deployment_type === "community" || b.deployment_type === "hosted") setDeploymentType(b.deployment_type)
       setError("")
     } catch (e) {
       setError(
@@ -349,6 +352,18 @@ export default function Console() {
     }
     mobileNavWasOpen.current = mobileNavOpen
   }, [mobileNavOpen])
+  useEffect(() => {
+    const controller = new AbortController()
+    void (async () => {
+      try {
+        const response = await fetch("/api/health", { cache: "no-store", signal: controller.signal })
+        if (!response.ok) return
+        const body = await response.json() as { deployment_type?: unknown }
+        if (body.deployment_type === "community" || body.deployment_type === "hosted") setDeploymentType(body.deployment_type)
+      } catch { /* Login remains available when deployment metadata is unavailable. */ }
+    })()
+    return () => controller.abort()
+  }, [])
   useEffect(() => {
     checkSession()
     const onFocus = () => checkSession()
@@ -1025,7 +1040,7 @@ export default function Console() {
           </Link>
           <h1 id="auth-title">Sign in</h1>
           <p>Sign in to your Agora account.</p>
-          <p className="auth-account">Owner and merchant accounts</p>
+          <p className="auth-account">{deploymentType === "community" ? "Workspace owner account" : deploymentType === "hosted" ? "Owner and merchant accounts" : "Account access"}</p>
           <form className="form-stack" onSubmit={login}>
             <div className="field">
               <Label htmlFor="account-email">Email address</Label>
@@ -1062,7 +1077,7 @@ export default function Console() {
               {authBusy ? "Signing in…" : "Sign in"}
             </Button>
           </form>
-          <p className="auth-register">New merchant? <a className="inline-link" href="/register">Request access</a></p>
+          {deploymentType === "hosted" && <p className="auth-register">New merchant? <a className="inline-link" href="/register">Request access</a></p>}
           <p className="support-note">Support: <a className="inline-link" href="mailto:info@belweave.com">info@belweave.com</a></p>
         </section>
       </main>
@@ -1275,6 +1290,7 @@ export default function Console() {
                       </strong>
                     </div>
                   </section>
+                  {authRole === "owner" && <RiskSignals key={data.provider_mode || "test"} preferredMode={data.provider_mode} />}
                   <p className="subtle finance-note">
                     These totals do not include provider fees or payout timing and are not an available bank balance.
                   </p>

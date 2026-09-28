@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, type FormEvent } from "react"
+import { useEffect, useState, type FormEvent } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -10,6 +10,21 @@ export default function Register() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
   const [registrationId, setRegistrationId] = useState("")
+  const [deploymentType, setDeploymentType] = useState<"community" | "hosted" | "unavailable" | null>(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void (async () => {
+      try {
+        const response = await fetch("/api/health", { cache: "no-store", signal: controller.signal })
+        const body = await response.json() as { deployment_type?: unknown }
+        setDeploymentType(response.ok && (body.deployment_type === "community" || body.deployment_type === "hosted") ? body.deployment_type : "unavailable")
+      } catch {
+        if (!controller.signal.aborted) setDeploymentType("unavailable")
+      }
+    })()
+    return () => controller.abort()
+  }, [])
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -49,7 +64,11 @@ export default function Register() {
     <main className="auth-page">
       <section className="auth-card" aria-labelledby="register-title">
         <Link className="wordmark" href="/" aria-label="Agora sign in">agora<span>·</span></Link>
-        {registrationId ? (
+        {deploymentType === null ? <p role="status">Checking whether merchant registration is available…</p> : deploymentType === "community" ? (
+          <div role="status"><h1 id="register-title">Single workspace</h1><p>Community installations use one workspace owner account. Merchant registration and approval are not enabled.</p></div>
+        ) : deploymentType === "unavailable" ? (
+          <div role="status"><h1 id="register-title">Registration unavailable</h1><p>Could not confirm merchant registration availability for this deployment. Return to sign in or contact support.</p></div>
+        ) : registrationId ? (
           <div role="status" aria-live="polite">
             <h1 id="register-title">Request received</h1>
             <p>Your registration is pending review. Payment data and API access stay locked until approval.</p>

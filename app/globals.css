@@ -503,11 +503,31 @@ h2 {
 }
 .activity-custom-range input { width: 142px; }
 .activity-timezone-note { margin: 4px 0 12px; }
+.risk-signals {
+  margin: 28px 0;
+  padding-top: 22px;
+  border-top: 1px solid #e7e7e7;
+}
+.risk-signals-heading { align-items: flex-start; }
+.risk-mode-controls { display: flex; flex-wrap: wrap; gap: 4px; }
+.risk-signals .form-note { max-width: 760px; }
+.risk-status { margin: 12px 0; color: #444; }
+.risk-signal-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 12px; }
+.risk-signal-card { min-width: 0; padding: 14px; border: 1px solid #e7e7e7; border-radius: 10px; }
+.risk-signal-title { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.risk-state { font-size: 12px; text-transform: capitalize; }
+.risk-signal-card dl { margin: 12px 0 0; }
+.risk-signal-card dl > div { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; }
+.risk-signal-card dt { color: #555; }
+.risk-signal-card dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.risk-signal-card code { font-size: 12px; }
 @media (max-width: 600px) {
   .activity-range-controls { gap: 2px; }
   .activity-range-controls > button { min-height: 34px; padding-inline: 8px; font-size: 12px; }
   .activity-custom-range { margin: 8px 0 0; width: 100%; }
   .activity-custom-range input { flex: 1 1 120px; min-width: 0; }
+  .risk-signals-heading { flex-direction: column; }
+  .risk-signal-card dl > div { align-items: flex-start; }
 }
 .overview-volume .accessible-chart-data {
   position: absolute;
