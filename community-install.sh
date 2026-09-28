@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
-# Prerelease bootstrap for Agora Community. Source access is through the user's
-# GitHub CLI session; this script never embeds tokens or removes Docker state.
+# Install Agora Community from its public GitHub repository.
 set -euo pipefail
 
-if ! command -v gh >/dev/null 2>&1; then
-  printf '%s\n' 'Install GitHub CLI (gh), then authenticate with `gh auth login` and retry.' >&2
-  exit 1
-fi
-if ! gh auth status >/dev/null 2>&1; then
-  printf '%s\n' 'Agora Community source is private during prerelease. Run `gh auth login` with repository access, then retry.' >&2
+if ! command -v git >/dev/null 2>&1; then
+  printf '%s\n' 'Install Git, then run this installer again.' >&2
   exit 1
 fi
 
@@ -17,5 +12,8 @@ chmod 700 "$TMP_DIR"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT INT TERM
 SOURCE_DIR="$TMP_DIR/source"
-gh repo clone pkyanam/agora-payments "$SOURCE_DIR"
+if ! git clone --depth 1 https://github.com/pkyanam/agora-payments.git "$SOURCE_DIR"; then
+  printf '%s\n' 'Could not download Agora Community from GitHub. Check your internet connection and retry.' >&2
+  exit 1
+fi
 bash "$SOURCE_DIR/install.sh" "$@"

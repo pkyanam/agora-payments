@@ -36,8 +36,7 @@ Usage: bash install.sh [options]
   --update                     Update an existing installation
   --help                       Show this help
 
-The source repository is private during prerelease. Run from an authenticated checkout,
-or use GitHub CLI authentication. Updates use the pinned repository/ref in install.json.
+The installer downloads source from GitHub. Updates use the repository and branch in install.json.
 USAGE
 }
 
@@ -128,11 +127,13 @@ if [[ -n "$SCRIPT_SOURCE" && -f "$SCRIPT_SOURCE" ]]; then
 fi
 TEMP_SOURCE=
 if [[ -z "$REPO_SOURCE" ]]; then
-  command -v gh >/dev/null 2>&1 || { printf '%s\n' 'The source repo is private during prerelease. Run from its checkout or sign in with GitHub CLI (`gh auth login`).' >&2; exit 1; }
-  gh auth status >/dev/null 2>&1 || { printf '%s\n' 'Sign in to GitHub with `gh auth login`, then rerun.' >&2; exit 1; }
+  command -v git >/dev/null 2>&1 || { printf '%s\n' 'Install Git, then run this installer again.' >&2; exit 1; }
   TEMP_SOURCE="$(mktemp -d "${TMPDIR:-/tmp}/agora-source.XXXXXX")"
   trap 'rm -rf "$TEMP_SOURCE"' EXIT INT TERM
-  gh repo clone pkyanam/agora-payments "$TEMP_SOURCE/source"
+  if ! git clone --depth 1 https://github.com/pkyanam/agora-payments.git "$TEMP_SOURCE/source"; then
+    printf '%s\n' 'Could not download Agora Community from GitHub. Check your internet connection and retry.' >&2
+    exit 1
+  fi
   REPO_SOURCE="$TEMP_SOURCE/source"
 fi
 
@@ -149,7 +150,7 @@ trap 'rmdir "$LOCK_DIR" 2>/dev/null || true; [[ -z "${TEMP_SOURCE:-}" ]] || rm -
 
 REPO_CACHE="$APP_DIR/repository.git"
 if [[ ! -d "$REPO_CACHE" ]]; then
-  # Do not use --shared here: curl | bash clones private source into a temporary
+  # Do not use --shared here: curl | bash clones source into a temporary
   # directory and removes it after install. A shared bare clone would retain an
   # alternates link to that temporary object store and break later updates.
   git clone --bare "$REPO_SOURCE" "$REPO_CACHE" >/dev/null

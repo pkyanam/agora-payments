@@ -3,8 +3,8 @@
 // Runtime types generated with workerd@1.20260926.1 2026-09-27 nodejs_compat,nodejs_compat_populate_process_env
 interface __BaseEnv_Env {
 	AGORA_PAYMENT_PROVIDER: "sandbox";
-	AGORA_PUBLIC_ORIGIN: "https://agora-payments.vercel.app";
-	AGORA_OWNER_EMAIL: "info@belweave.com";
+	AGORA_PUBLIC_ORIGIN: string;
+	AGORA_OWNER_EMAIL: string;
 	AGORA_ADMIN_PASSWORD: string;
 	AGORA_ADMIN_TOKEN: string;
 	AGORA_MFA_ENCRYPTION_KEY: string;

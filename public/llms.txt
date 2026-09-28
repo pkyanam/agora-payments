@@ -1,22 +1,10 @@
 # Agora API guide
 
-Agora is a hosted payment workflow preview with an isolated Stripe TEST-mode API. Test cards do not move money. Live charges and payouts are disabled. The Vercel preview points to a separate QA Worker and Durable Object; do not treat its records as production accounting data.
+Replace `https://your-agora-host.example` with your Agora address.
 
-- REST base: https://agora-payments.vercel.app/api/v1
-- API reference: https://agora-payments.vercel.app/api-reference
-- OpenAPI 3.1: https://agora-payments.vercel.app/openapi.json
-- CLI installer (private prerelease; requires `gh auth login` and repository access): `(set -o pipefail; gh api repos/pkyanam/agora-cli/contents/install.sh -H 'Accept: application/vnd.github.raw+json' | bash)`
-- CLI source: https://github.com/pkyanam/agora-cli
-- Authentication: `Authorization: Bearer $AGORA_API_KEY`; keys are scoped to one merchant and one provider mode.
-- Never place API keys in browser code. Treat the key as a secret and revoke it if exposed.
-- All amounts are integer USD cents (`4900` means $49.00).
-- Every POST mutation requires an `Idempotency-Key`; retry with the same key and exact JSON payload. Changed payload under the same key returns 409.
-- Product: `GET /products`, `POST /products` (`products:read`, `products:write`).
-- Payment: `GET /payments`, `GET /payments/{id}`, `POST /payments` (`payments:read`, `payments:write`). Checkout creation returns an absolute Agora checkout wrapper URL. The hosted QA environment uses Stripe-hosted test Checkout; confirmation follows a verified signed provider event.
-- Reconcile: `POST /payments/{id}/reconcile` (`payments:write`). It retrieves only the stored session for this tenant and validates provider mode and metadata.
-- Refund: `POST /refunds` with `payment_id`, `amount`, and `reason` (`refunds:write`). Refunds remain pending until Stripe confirms them; an approved agent request is not an executed refund.
-- Events: `GET /events?cursor=0&limit=25` (`events:read`); follow `next_cursor`.
-- API keys are pinned to sandbox, test, or live mode when created. A key cannot switch modes when global configuration changes.
-- New merchant registration requires review. Every merchant must connect its own provider account; the founder's account is never shared across tenants.
-- Stripe test-mode events and fake cards are for integration testing only. Do not use real cards, bank credentials, or live API keys in the hosted preview.
-- The standalone CLI accepts `AGORA_URL` and `AGORA_API_KEY`, emits JSON, and stores no credentials. Run `agora --help` for commands.
+- API: `https://your-agora-host.example/api/v1`
+- Reference: `https://your-agora-host.example/api-reference`
+- OpenAPI: `https://your-agora-host.example/openapi.json`
+- Send API keys in `Authorization: Bearer …` headers. Keep keys private.
+- Amounts use integer USD cents (`4900` means `$49.00`).
+- Include an `Idempotency-Key` with every `POST` request.

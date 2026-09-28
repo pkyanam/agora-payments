@@ -36,13 +36,13 @@ globalThis.fetch = async (input, init = {}) => {
   trace.push({ method, pathname: url.pathname, body: init.body ? String(init.body) : null });
   fs.writeFileSync(tracePath, JSON.stringify(trace));
   if (url.pathname === '/v1/account' && method === 'GET') {
-    return Response.json({ id: 'acct_fixtureonly', business_profile: { name: 'Belweave', support_email: 'info@belweave.com' }, charges_enabled: true, payouts_enabled: true });
+    return Response.json({ id: 'acct_fixtureonly', business_profile: { name: 'Example Merchant', support_email: 'owner@example.com' }, charges_enabled: true, payouts_enabled: true });
   }
   if (url.pathname === '/v1/webhook_endpoints' && method === 'GET') {
     return Response.json({ data: [], has_more: false });
   }
   if (url.pathname === '/v1/webhook_endpoints' && method === 'POST') {
-    return Response.json({ id: 'we_fixture_only', url: 'https://agora-api.preetham-981.workers.dev/api/webhooks/stripe', enabled_events: [], status: 'enabled', livemode: true, secret: 'whsec_fixture_only' });
+    return Response.json({ id: 'we_fixture_only', url: 'https://api.example.com/api/webhooks/stripe', enabled_events: [], status: 'enabled', livemode: true, secret: 'whsec_fixture_only' });
   }
   return Response.json({ error: { code: 'unexpected_mock_endpoint' } }, { status: 500 });
 };
@@ -68,11 +68,16 @@ process.exit(Number(process.env.AGORA_TEST_FAIL_WRANGLER_AT || 0) === number ? 1
     scriptPath: path.join(scripts, 'configure-stripe-live.mjs'),
     bin,
     preloadPath,
-    run(failWranglerAt?: number) {
+    run(failWranglerAt?: number, overrides: Record<string, string> = {}) {
       const env = {
         PATH: `${bin}:${process.env.PATH || ''}`,
         AGORA_TEST_TRACE: tracePath,
+        AGORA_STRIPE_WEBHOOK_URL: 'https://api.example.com/api/webhooks/stripe',
+        AGORA_STRIPE_PUBLIC_ORIGIN: 'https://app.example.com',
+        AGORA_STRIPE_EXPECTED_ACCOUNT_NAME: 'Example Merchant',
+        AGORA_STRIPE_EXPECTED_SUPPORT_EMAIL: 'owner@example.com',
         ...(failWranglerAt ? { AGORA_TEST_FAIL_WRANGLER_AT: String(failWranglerAt) } : {}),
+        ...overrides,
       } as unknown as NodeJS.ProcessEnv;
       return spawnSync(process.execPath, ['--import', preloadPath, path.join(scripts, 'configure-stripe-live.mjs')], { cwd: root, env, encoding: 'utf8' });
     },
@@ -97,7 +102,7 @@ test('live setup only reads account/webhook APIs and enables live config after a
       ['POST', '/v1/webhook_endpoints'],
     ]);
     const endpointFields = new URLSearchParams(stripeCalls[2].body || '');
-    assert.equal(endpointFields.get('url'), 'https://agora-api.preetham-981.workers.dev/api/webhooks/stripe');
+    assert.equal(endpointFields.get('url'), 'https://api.example.com/api/webhooks/stripe');
     assert.deepEqual(endpointFields.getAll('enabled_events[]').sort(), [
       'checkout.session.async_payment_failed',
       'checkout.session.async_payment_succeeded',
@@ -112,6 +117,16 @@ test('live setup only reads account/webhook APIs and enables live config after a
     assert.deepEqual(wranglerCalls.map((call) => call.args?.[1]), ['deploy', 'secret', 'secret', 'deploy']);
     assert.ok(wranglerCalls[1].stdinBytes as number > 0);
     assert.ok(wranglerCalls[2].stdinBytes as number > 0);
+  } finally { f.cleanup(); }
+});
+
+test('live setup rejects loopback webhook URLs before making external requests', () => {
+  const f = fixture();
+  try {
+    const result = f.run(undefined, { AGORA_STRIPE_WEBHOOK_URL: 'https://127.0.0.1/api/webhooks/stripe' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /webhook_url_must_use_a_public_https_hostname/);
+    assert.equal(fs.existsSync(f.tracePath), false);
   } finally { f.cleanup(); }
 });
 

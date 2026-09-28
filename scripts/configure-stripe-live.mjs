@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { isIP } from 'node:net';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const secretsDir = path.join(root, '.secrets');
@@ -11,7 +12,6 @@ const keyFile = path.join(secretsDir, 'stripe-live-api-key');
 const accountIdFile = path.join(secretsDir, 'stripe-live-account-id');
 const signingFile = path.join(secretsDir, 'stripe-live-webhook-secret');
 const endpointFile = path.join(secretsDir, 'stripe-live-webhook-endpoint-id');
-const endpointUrl = 'https://agora-api.preetham-981.workers.dev/api/webhooks/stripe';
 const events = [
   'checkout.session.completed',
   'checkout.session.async_payment_succeeded',
@@ -19,6 +19,33 @@ const events = [
   'checkout.session.expired',
   'refund.updated',
 ];
+
+function publicHttpsUrl(value, label, pathname) {
+  let url;
+  try { url = new URL(value); } catch { fail(`${label}_must_be_a_valid_https_url`); }
+  const host = url.hostname.toLowerCase();
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || isIP(host)
+      || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')
+      || host.endsWith('.test') || host.endsWith('.invalid')) {
+    fail(`${label}_must_use_a_public_https_hostname`);
+  }
+  if (pathname !== undefined && url.pathname !== pathname) fail(`${label}_path_is_invalid`);
+  return url;
+}
+
+function deploymentConfig() {
+  const endpointValue = process.env.AGORA_STRIPE_WEBHOOK_URL;
+  const originValue = process.env.AGORA_STRIPE_PUBLIC_ORIGIN;
+  const accountName = process.env.AGORA_STRIPE_EXPECTED_ACCOUNT_NAME?.trim();
+  const supportEmail = process.env.AGORA_STRIPE_EXPECTED_SUPPORT_EMAIL?.trim().toLowerCase();
+  if (!endpointValue || !originValue || !accountName || !supportEmail) {
+    fail('set_AGORA_STRIPE_WEBHOOK_URL_AGORA_STRIPE_PUBLIC_ORIGIN_AGORA_STRIPE_EXPECTED_ACCOUNT_NAME_and_AGORA_STRIPE_EXPECTED_SUPPORT_EMAIL');
+  }
+  const endpoint = publicHttpsUrl(endpointValue, 'webhook_url', '/api/webhooks/stripe');
+  const origin = publicHttpsUrl(originValue, 'public_origin');
+  if (origin.pathname !== '/') fail('public_origin_must_be_a_root_origin');
+  return { endpointUrl: endpoint.toString(), publicOrigin: origin.origin, accountName, supportEmail };
+}
 
 function fail(code) {
   console.error(JSON.stringify({ error: code }));
@@ -81,7 +108,7 @@ function wrangler(args, input) {
   if (result.status !== 0) fail('cloudflare_secret_or_deploy_step_failed');
 }
 
-function writeRuntimeConfig(provider, mode) {
+function writeRuntimeConfig(provider, mode, publicOrigin) {
   const config = path.join(root, 'wrangler.jsonc');
   const original = fs.readFileSync(config, 'utf8');
   const parsed = JSON.parse(original);
@@ -90,7 +117,7 @@ function writeRuntimeConfig(provider, mode) {
     AGORA_DEPLOYMENT_ENV: 'production',
     AGORA_PAYMENT_PROVIDER: provider,
     ...(mode ? { AGORA_STRIPE_MODE: mode } : {}),
-    AGORA_PUBLIC_ORIGIN: 'https://agora-payments.vercel.app',
+    AGORA_PUBLIC_ORIGIN: publicOrigin,
   };
   const temp = path.join(root, 'wrangler.live.generated.jsonc');
   try { if (fs.lstatSync(temp).isSymbolicLink()) fail('generated_config_must_not_be_a_symlink'); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
@@ -100,13 +127,14 @@ function writeRuntimeConfig(provider, mode) {
 
 async function main() {
   if (process.argv.includes('--help')) {
-    console.log('Prefer a least-privilege restricted live key in outputs/agora/.secrets/stripe-live-api-key (mode 0600); a standard live API key is also accepted. Then run: node scripts/configure-stripe-live.mjs');
+    console.log('Set AGORA_STRIPE_WEBHOOK_URL, AGORA_STRIPE_PUBLIC_ORIGIN, AGORA_STRIPE_EXPECTED_ACCOUNT_NAME, and AGORA_STRIPE_EXPECTED_SUPPORT_EMAIL for your own deployment. Store a restricted live key in .secrets/stripe-live-api-key (mode 0600), then run: node scripts/configure-stripe-live.mjs');
     return;
   }
+  const config = deploymentConfig();
   if (process.argv.includes('--dry-run')) {
     const key = readPrivate(keyFile);
     if (!key.startsWith('rk_live_') && !key.startsWith('sk_live_')) fail('a_live_mode_stripe_key_is_required');
-    console.log(JSON.stringify({ dryRun: true, keyShape: key.startsWith('rk_live_') ? 'restricted-live' : 'live', endpoint: endpointUrl, eventCount: events.length, actions: ['verify-account', 'create-or-reuse-webhook', 'store-worker-secrets', 'deploy-live-provider-config'] }));
+    console.log(JSON.stringify({ dryRun: true, keyShape: key.startsWith('rk_live_') ? 'restricted-live' : 'live', eventCount: events.length, actions: ['verify-account', 'create-or-reuse-webhook', 'store-worker-secrets', 'deploy-live-provider-config'] }));
     return;
   }
 
@@ -115,7 +143,7 @@ async function main() {
   const account = await stripe(key, '/v1/account');
   const accountName = account?.business_profile?.name;
   const supportEmail = account?.business_profile?.support_email;
-  if (accountName !== 'Belweave' || supportEmail?.toLowerCase() !== 'info@belweave.com' || account?.charges_enabled !== true || account?.payouts_enabled !== true) fail('stripe_account_identity_or_capabilities_do_not_match');
+  if (accountName !== config.accountName || supportEmail?.toLowerCase() !== config.supportEmail || account?.charges_enabled !== true || account?.payouts_enabled !== true) fail('stripe_account_identity_or_capabilities_do_not_match');
 
   let existing = [];
   let cursor;
@@ -127,7 +155,7 @@ async function main() {
   } while (cursor);
   const expectedAccountId = readPrivate(accountIdFile);
   if (!/^acct_[A-Za-z0-9]+$/.test(expectedAccountId) || account.id !== expectedAccountId) fail('stripe_account_id_does_not_match_verified_owner_account');
-  const matchingEndpoints = existing.filter((entry) => entry.url === endpointUrl);
+  const matchingEndpoints = existing.filter((entry) => entry.url === config.endpointUrl);
   if (matchingEndpoints.length > 1) fail('multiple_matching_endpoints_require_manual_review');
   let endpoint = matchingEndpoints[0];
   let signingSecret;
@@ -138,7 +166,7 @@ async function main() {
     if (!signingSecret.startsWith('whsec_')) fail('webhook_secret_file_format_invalid');
     savePrivate(endpointFile, endpoint.id);
   } else {
-    const form = new URLSearchParams({ url: endpointUrl, description: 'Agora Payments main Worker live webhook', 'metadata[managed_by]': 'agora-live-setup' });
+    const form = new URLSearchParams({ url: config.endpointUrl, description: 'Agora Payments live webhook', 'metadata[managed_by]': 'agora-live-setup' });
     for (const event of events) form.append('enabled_events[]', event);
     endpoint = await stripe(key, '/v1/webhook_endpoints', 'POST', form);
     signingSecret = endpoint.secret;
@@ -147,12 +175,12 @@ async function main() {
     savePrivate(endpointFile, endpoint.id);
   }
 
-  const configPath = writeRuntimeConfig('sandbox');
+  const configPath = writeRuntimeConfig('sandbox', undefined, config.publicOrigin);
   try {
     wrangler(['deploy', '--config', configPath]);
     wrangler(['secret', 'put', 'STRIPE_LIVE_SECRET_KEY', '--config', configPath], key);
     wrangler(['secret', 'put', 'STRIPE_LIVE_WEBHOOK_SECRET', '--config', configPath], signingSecret);
-    writeRuntimeConfig('stripe', 'live');
+    writeRuntimeConfig('stripe', 'live', config.publicOrigin);
     wrangler(['deploy', '--config', configPath]);
   } finally {
     try { fs.unlinkSync(configPath); } catch {}
