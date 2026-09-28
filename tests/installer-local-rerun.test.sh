@@ -5,6 +5,10 @@ TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agora-local-rerun-test.XXXXXX")"
 trap 'rm -rf -- "$TEST_DIR"' EXIT INT TERM
 APP_DIR="$TEST_DIR/agora"
 mkdir -p "$APP_DIR/state/data"
+mkdir -p "$APP_DIR/current/scripts"
+cat > "$APP_DIR/current/scripts/print-owner-setup-link.mjs" <<'HANDOFF'
+console.log('Owner setup is already complete.')
+HANDOFF
 printf '%s\n' '{"format":1,"install_dir":"test","deployment_target":"node","repository":"pkyanam/agora-payments","git_ref":"main","current_version":"oldversion01","port":3000,"host":"127.0.0.1","public_origin":"http://localhost:3000"}' > "$APP_DIR/install.json"
 printf 'keep-this-owner-secret\n' > "$APP_DIR/state/.env.local"
 printf 'do-not-overwrite\n' > "$APP_DIR/state/data/agora.sqlite"

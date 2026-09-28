@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+export TEST_ROOT="$ROOT"
 TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agora-boat-installer-test.XXXXXX")"
 trap 'if [[ -f "$TEST_DIR/state/server.pid" ]]; then kill "$(cat "$TEST_DIR/state/server.pid")" 2>/dev/null || true; fi; rm -rf -- "$TEST_DIR"' EXIT INT TERM
 
@@ -77,6 +78,8 @@ fs.writeFileSync(`${dir}/install.json`,JSON.stringify({format:1,deployment_targe
 fs.symlinkSync('releases/abcdef123456',`${dir}/current`);
 fs.writeFileSync(`${dir}/state/.env.local`,'test-only-env\n',{mode:0o600});
 const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(`${dir}/state/data/agora.sqlite`);db.exec('CREATE TABLE marker(value TEXT); INSERT INTO marker VALUES (\'old\')');db.close();
+const {createHash}=require('node:crypto'),setupToken='SAFE_TEST_SETUP_TOKEN_123456789012345678901234567890';const setupDb=new DatabaseSync(`${dir}/state/data/agora.sqlite`);setupDb.exec("CREATE TABLE owner_password(id TEXT PRIMARY KEY); CREATE TABLE owner_setup(id TEXT PRIMARY KEY,token_hash TEXT NOT NULL,expires_at TEXT NOT NULL)");setupDb.prepare("INSERT INTO owner_setup VALUES('owner',?,?)").run(createHash('sha256').update(setupToken).digest('hex'),new Date(Date.now()+7*86400000).toISOString());setupDb.close();fs.writeFileSync(`${dir}/state/community-owner-credentials.txt`,`Open: ${origin}/#setup=${setupToken}\n`,{mode:0o600});
+fs.mkdirSync(`${dir}/releases/abcdef123456/scripts`,{recursive:true});fs.copyFileSync(`${process.env.TEST_ROOT}/scripts/print-owner-setup-link.mjs`,`${dir}/releases/abcdef123456/scripts/print-owner-setup-link.mjs`);
 fs.writeFileSync(`${dir}/start.sh`,'#!/usr/bin/env bash\nexit 0\n',{mode:0o700});
 fs.writeFileSync(`${dir}/releases/abcdef123456/start.sh`,'#!/usr/bin/env bash\nexit 0\n',{mode:0o700});
 fs.writeFileSync(`${dir}/releases/abcdef123456/update.sh`,'#!/usr/bin/env bash\nprintf "update\\n" >> "$TEST_LOG"\nif [[ "${TEST_UPDATE_MODE:-}" == failure ]]; then\n node - "$TEST_APP_DIR" <<\'NODE\'\nconst fs=require("node:fs");const {DatabaseSync}=require("node:sqlite");const d=process.argv[2];const db=new DatabaseSync(`${d}/state/data/agora.sqlite`);db.prepare(`UPDATE marker SET value=?`).run("new");db.close();fs.mkdirSync(`${d}/releases/badbadbadbad`,{recursive:true});fs.copyFileSync(`${d}/start.sh`,`${d}/releases/badbadbadbad/start.sh`);fs.copyFileSync(`${d}/update.sh`,`${d}/releases/badbadbadbad/update.sh`);fs.unlinkSync(`${d}/current`);fs.symlinkSync("releases/badbadbadbad",`${d}/current`);const m=JSON.parse(fs.readFileSync(`${d}/install.json`));m.current_version="badbadbadbad";fs.writeFileSync(`${d}/install.json`,JSON.stringify(m));\nNODE\nfi\n',{mode:0o700});
@@ -85,6 +88,8 @@ NODE
 printf 'mock install finished\n'
 INSTALL
   chmod +x "$dest/install.sh"
+  mkdir -p "$dest/scripts"
+  cp "$TEST_ROOT/scripts/print-owner-setup-link.mjs" "$dest/scripts/"
   exit 0
 fi
 if [[ "$1" == -C && "$3" == fetch ]]; then exit 0; fi
@@ -186,6 +191,8 @@ export TEST_APP_DIR="$HOME/agora-install"
 OUTPUT="$(bash "$ROOT/install.sh" --target boat --boat-id bx_test123 --owner-email "$EMAIL" --dir "$HOME/agora-install" --port "$PORT" --non-interactive)"
 [[ "$OUTPUT" == *"https://bx-test-123-$PORT.on.ascii.dev"* ]]
 [[ "$OUTPUT" != *mock-private-token* && "$OUTPUT" != *"Password:"* ]]
+[[ "$(grep -o 'SAFE_TEST_SETUP_TOKEN_123456789012345678901234567890' <<<"$OUTPUT" | wc -l | tr -d ' ')" == 1 ]]
+[[ "${OUTPUT#*Agora is hosted at https://bx-test-123-$PORT.on.ascii.dev}" == *"One-time owner setup URL: https://bx-test-123-$PORT.on.ascii.dev/#setup=SAFE_TEST_SETUP_TOKEN_123456789012345678901234567890"* ]]
 [[ ! -e "$STATE/injected" ]]
 [[ "$(cat "$HOME/agora-install/install.json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).owner_email))')" == "$EMAIL" ]]
 [[ "$(grep -n '^host private$' "$TEST_LOG" | cut -d: -f1)" -lt "$(grep -n '^systemctl start$' "$TEST_LOG" | cut -d: -f1)" ]]
@@ -196,6 +203,7 @@ OUTPUT="$(bash "$ROOT/install.sh" --target boat --boat-id bx_test123 --owner-ema
 [[ "$OUTPUT" == *"https://bx-test-123-$PORT.on.ascii.dev"* ]]
 [[ "$(grep -c '^npm ' "$TEST_LOG" || true)" == "$first_installs" ]]
 grep -Fqx 'AGORA_DEPLOYMENT_HOSTING=boat' "$HOME/agora-install/state/.env.local"
+[[ "$(grep -o 'SAFE_TEST_SETUP_TOKEN_123456789012345678901234567890' <<<"$OUTPUT" | wc -l | tr -d ' ')" == 1 ]]
 
 before_update="$(wc -l < "$TEST_LOG" | tr -d ' ')"
 bash "$ROOT/install.sh" --target boat --boat-id bx_test123 --owner-email "$EMAIL" --dir "$HOME/agora-install" --port "$PORT" --non-interactive --update >/dev/null

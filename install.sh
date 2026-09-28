@@ -3,21 +3,28 @@
 set -euo pipefail
 has_interactive_tty() { [[ -r /dev/tty ]] && ( true </dev/tty ) 2>/dev/null; }
 ORIGINAL_ARGS=("$@")
-for arg in "${ORIGINAL_ARGS[@]}"; do
+dispatch_target() {
+  local script="$1"
+  if [[ -n "${ORIGINAL_ARGS[0]-}" ]]; then exec bash "$script" "${ORIGINAL_ARGS[@]}"; fi
+  exec bash "$script"
+}
+if (($#)); then
+for arg in "$@"; do
   if [[ "$arg" == --target=boat ]]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-    exec bash "$SCRIPT_DIR/install-boat.sh" "${ORIGINAL_ARGS[@]}"
+    dispatch_target "$SCRIPT_DIR/install-boat.sh"
   fi
 done
 for ((i = 0; i + 1 < ${#ORIGINAL_ARGS[@]}; i++)); do
   if [[ "${ORIGINAL_ARGS[$i]}" == --target && "${ORIGINAL_ARGS[$((i + 1))]}" == cloudflare ]]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-    exec bash "$SCRIPT_DIR/install-cloud.sh" "${ORIGINAL_ARGS[@]}"
+    dispatch_target "$SCRIPT_DIR/install-cloud.sh"
   elif [[ "${ORIGINAL_ARGS[$i]}" == --target && "${ORIGINAL_ARGS[$((i + 1))]}" == boat ]]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-    exec bash "$SCRIPT_DIR/install-boat.sh" "${ORIGINAL_ARGS[@]}"
+    dispatch_target "$SCRIPT_DIR/install-boat.sh"
   fi
 done
+fi
 
 TARGET=local
 TARGET_SET=0
@@ -74,11 +81,11 @@ fi
 
 if [[ "$TARGET" == cloudflare ]]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-  exec bash "$SCRIPT_DIR/install-cloud.sh" "${ORIGINAL_ARGS[@]}"
+  dispatch_target "$SCRIPT_DIR/install-cloud.sh"
 fi
 if [[ "$TARGET" == boat ]]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-  exec bash "$SCRIPT_DIR/install-boat.sh" "${ORIGINAL_ARGS[@]}"
+  dispatch_target "$SCRIPT_DIR/install-boat.sh"
 fi
 [[ "$TARGET" == local ]] || { printf 'Unsupported target: %s (currently supported: local, boat, cloudflare)\n' "$TARGET" >&2; exit 2; }
 [[ "$APP_DIR" == /* ]] || { printf '%s\n' '--dir must be an absolute path.' >&2; exit 2; }
@@ -111,16 +118,22 @@ mkdir -p "$(dirname "$APP_DIR")"
 APP_DIR="$(cd "$(dirname "$APP_DIR")" && pwd -P)/$(basename "$APP_DIR")"
 [[ ! -L "$APP_DIR" ]] || { printf 'Refusing a symlink installation directory: %s\n' "$APP_DIR" >&2; exit 1; }
 if [[ -f "$APP_DIR/install.json" ]]; then
-  if ((UPDATE || NON_INTERACTIVE)); then exec bash "$APP_DIR/update.sh" --dir "$APP_DIR"; fi
+  if ((UPDATE || NON_INTERACTIVE)); then
+    bash "$APP_DIR/update.sh" --dir "$APP_DIR"
+    node "$APP_DIR/current/scripts/print-owner-setup-link.mjs" "$APP_DIR"
+    exit 0
+  fi
   node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(`Agora ${m.current_version} is installed at ${m.install_dir}.`)' "$APP_DIR/install.json"
   if has_interactive_tty; then
     printf 'Check GitHub for the latest release and update this installation? [Y/n] ' > /dev/tty
     IFS= read -r UPDATE_ANSWER < /dev/tty || UPDATE_ANSWER=
     case "$UPDATE_ANSWER" in
-      ''|[yY]|[yY][eE][sS]) exec bash "$APP_DIR/update.sh" --dir "$APP_DIR" ;;
-      [nN]|[nN][oO]) printf '%s\n' 'Kept the existing installation unchanged.'; exit 0 ;;
+      ''|[yY]|[yY][eE][sS]) bash "$APP_DIR/update.sh" --dir "$APP_DIR" ;;
+      [nN]|[nN][oO]) printf '%s\n' 'Kept the existing installation unchanged.' ;;
       *) printf '%s\n' 'Please answer yes or no.' >&2; exit 2 ;;
     esac
+    node "$APP_DIR/current/scripts/print-owner-setup-link.mjs" "$APP_DIR"
+    exit 0
   fi
   printf 'Run this installer again with --non-interactive to update %s.\n' "$APP_DIR"
   exit 0
@@ -307,10 +320,10 @@ cat <<RESULT
 Agora Community is installed at: $APP_DIR
 Release: $SHORT_COMMIT
 SQLite data and private configuration stay in this installation across upgrades.
-One-time owner setup link (private): $SECRETS_FILE
 Payments start in Stripe test mode. Configure test credentials and verify a signed test webhook before issuing API keys.
 Start the app with: "$APP_DIR/start.sh"
 Open: $ORIGIN
 Check status with: agora server status --dir "$APP_DIR"
 Update with: agora server update --dir "$APP_DIR"
 RESULT
+node "$APP_DIR/current/scripts/print-owner-setup-link.mjs" "$APP_DIR"

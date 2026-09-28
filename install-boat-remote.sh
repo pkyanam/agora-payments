@@ -226,6 +226,7 @@ if [[ -f "$APP_DIR/install.json" ]]; then
   # the service quiesced while it snapshots and rolls back SQLite/config.
   update_with_rollback || fail 'Agora update failed; the previous release and database were restored and verified.'
   if ! install_agora_cli; then printf 'Warning: app is live, but the Agora CLI did not install. Retry inside the sandbox with the Agora CLI installer.\n' >&2; fi
+  node "$APP_DIR/current/scripts/print-owner-setup-link.mjs" "$APP_DIR"
   exit 0
 fi
 
@@ -263,10 +264,11 @@ git -C "$SOURCE_DIR" checkout --detach FETCH_HEAD >/dev/null 2>&1 || fail 'Could
 [[ "$(git -C "$SOURCE_DIR" rev-parse HEAD)" == "$SOURCE_COMMIT" ]] || fail 'Remote installer source did not match the local installer revision.'
 printf 'Installing pinned Agora source %s into %s...\n' "${SOURCE_COMMIT:0:12}" "$APP_DIR"
 if [[ -n "$OWNER_EMAIL" ]]; then OWNER_ARGS=(--owner-email "$OWNER_EMAIL"); else OWNER_ARGS=(); fi
-AGORA_DEPLOYMENT_HOSTING=boat bash "$SOURCE_DIR/install.sh" --target local --non-interactive "${OWNER_ARGS[@]}" --dir "$APP_DIR" --url "$PUBLIC_ORIGIN" --port "$PORT" --host 0.0.0.0 || fail 'Agora installation failed. The sandbox and its private route were left intact for recovery.'
+AGORA_DEPLOYMENT_HOSTING=boat bash "$SOURCE_DIR/install.sh" --target local --non-interactive "${OWNER_ARGS[@]}" --dir "$APP_DIR" --url "$PUBLIC_ORIGIN" --port "$PORT" --host 0.0.0.0 >/dev/null || fail 'Agora installation failed. The sandbox and its private route were left intact for recovery.'
 
 write_service "$(id -un)"
 "${SUDO[@]}" systemctl start "$SERVICE"
 wait_for_health || fail "Agora did not become healthy on port $PORT; the public route remains private. Inspect `sudo journalctl -u $SERVICE`."
 host_publicly
 if ! install_agora_cli; then printf 'Warning: Agora is live, but the Agora CLI did not install. Retry inside the sandbox with the Agora CLI installer.\n' >&2; fi
+node "$APP_DIR/current/scripts/print-owner-setup-link.mjs" "$APP_DIR"
