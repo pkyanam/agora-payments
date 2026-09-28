@@ -1350,6 +1350,37 @@ body [data-slot="badge"] {
   margin-top: 25px !important;
   font-size: 14px !important;
 }
+.checkout-review {
+  width: min(100% - 32px, 480px);
+  margin: clamp(36px, 10vh, 96px) auto 48px;
+  padding: 30px 32px 28px;
+  border: 1px solid #e6e6e6;
+  border-radius: 20px;
+  background: #fff;
+  text-align: left;
+  box-shadow: 0 18px 60px #11110a0a;
+}
+.checkout-review > .wordmark { margin: 0 0 32px; text-align: center; }
+.checkout-review-mark { display: block; color: #686868; font-size: 11px; font-weight: 600; letter-spacing: .13em; text-align: center; }
+.checkout-review > h1 { margin: 10px 0 24px; font-size: clamp(25px, 6vw, 32px); letter-spacing: -.04em; text-align: center; }
+.checkout-review-card { border: 1px solid #e8e8e8; border-radius: 14px; padding: 20px; }
+.checkout-review-merchant { margin: 0 0 18px; font-size: 14px; font-weight: 600; }
+.checkout-review-card dl { margin: 0; }
+.checkout-review-card dl > div { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 13px 0; border-top: 1px solid #eee; }
+.checkout-review-card dt { color: #666; font-size: 14px; }
+.checkout-review-card dd { margin: 0; font-size: 15px; font-weight: 500; text-align: right; overflow-wrap: anywhere; }
+.checkout-review-card .checkout-review-amount { align-items: center; padding-top: 17px; }
+.checkout-review-amount dd { font-size: 24px; font-weight: 650; letter-spacing: -.04em; }
+.checkout-review-amount dd span { color: #666; font-size: 12px; font-weight: 500; letter-spacing: 0; }
+.checkout-review-note { margin: 20px 0 18px; color: #555; font-size: 14px; line-height: 1.55; text-align: center; }
+.checkout-review > .checkout-control { margin-top: 2px; }
+.checkout-review-footer { margin: 18px 0 0; color: #777; font-size: 12px; line-height: 1.5; text-align: center; }
+.checkout-review-status { color: #444; font-size: 14px; line-height: 1.5; text-align: center; }
+@media print {
+  body:has(.checkout-receipt) { background: #fff !important; }
+  .checkout-receipt { width: 100%; max-width: 640px; margin: 0 auto; padding: 28px; border: 0; box-shadow: none; }
+  .checkout-receipt .checkout-print, .checkout-receipt .checkout-review-footer { display: none !important; }
+}
 .checkout-page > code {
   color: #444;
   font-size: 13px;
@@ -2396,6 +2427,7 @@ body [data-slot="badge"] {
     padding-right: 18px;
     padding-left: 18px;
   }
+  .checkout-review { padding: 24px 20px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,

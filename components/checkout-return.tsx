@@ -1,10 +1,18 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import Link from "next/link"
 
 type ProviderStatus = {
   status: "pending" | "succeeded" | "failed" | "expired"
+  receipt?: {
+    reference: string
+    merchant: string
+    customer: string
+    product_name: string
+    amount: number
+    currency: string
+    paid_at?: string
+  }
 }
 
 export default function CheckoutReturn({
@@ -21,6 +29,7 @@ export default function CheckoutReturn({
   )
   const [message, setMessage] = useState("Checking for provider confirmation…")
   const [attempt, setAttempt] = useState(0)
+  const [receipt, setReceipt] = useState<ProviderStatus["receipt"]>()
 
   useEffect(() => {
     let active = true
@@ -44,12 +53,14 @@ export default function CheckoutReturn({
           const body = (await response.json()) as {
             error?: { message?: string }
             status?: ProviderStatus["status"]
+            receipt?: ProviderStatus["receipt"]
           }
           if (!response.ok || !body.status) {
             throw new Error(body.error?.message || "Status is not available yet.")
           }
           if (!active) return
           setStatus(body.status)
+          setReceipt(body.receipt)
           if (body.status !== "pending") {
             setMessage(
               body.status === "succeeded"
@@ -91,11 +102,26 @@ export default function CheckoutReturn({
           : "Payment status is pending."
 
   return (
-    <main className="checkout-page checkout-return">
-      <Link className="wordmark" href="/">
-        agora<span>·</span>
-      </Link>
-      <span className="sandbox-mark">Provider status</span>
+    <main className={`checkout-page checkout-return${status === "succeeded" && receipt ? " checkout-receipt" : ""}`}>
+      <span className="wordmark">agora<span>·</span></span>
+      {status === "succeeded" && receipt ? <>
+        <span className="checkout-review-mark">PAYMENT RECEIPT</span>
+        <h1>Payment confirmed</h1>
+        <p role="status" aria-live="polite">{message}</p>
+        <section className="checkout-review-card" aria-label="Payment receipt">
+          <p className="checkout-review-merchant">{receipt.merchant}</p>
+          <dl>
+            <div><dt>Item</dt><dd>{receipt.product_name}</dd></div>
+            <div><dt>Name</dt><dd>{receipt.customer}</dd></div>
+            {receipt.paid_at && <div><dt>Payment date</dt><dd>{new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(new Date(receipt.paid_at))}</dd></div>}
+            <div><dt>Reference</dt><dd>{receipt.reference}</dd></div>
+            <div className="checkout-review-amount"><dt>Total paid</dt><dd>{new Intl.NumberFormat("en-US", { style: "currency", currency: receipt.currency.toUpperCase() }).format(receipt.amount / 100)} <span>{receipt.currency.toUpperCase()}</span></dd></div>
+          </dl>
+        </section>
+        <button className="checkout-control checkout-print" onClick={() => window.print()}>Print or save receipt</button>
+        <p className="checkout-review-footer">You can save this receipt as a PDF from your browser’s print dialog. You may close this page when you’re done.</p>
+      </> : <>
+      <span className="sandbox-mark">Payment status</span>
       <h1>{title}</h1>
       <p role="status" aria-live="polite">{message}</p>
       <div className="form-stack">
@@ -104,10 +130,8 @@ export default function CheckoutReturn({
             Check again
           </button>
         )}
-        <Link className="inline-link" href="/?view=Payments">
-          Return to payments
-        </Link>
       </div>
+      </>}
     </main>
   )
 }

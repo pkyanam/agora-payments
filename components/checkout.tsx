@@ -1,6 +1,5 @@
 "use client"
 import { useEffect, useState } from "react"
-import Link from "next/link"
 import { toast } from "sonner"
 export default function Checkout({ token }: { token: string }) {
   const [data, setData] = useState<{
@@ -26,15 +25,6 @@ export default function Checkout({ token }: { token: string }) {
           )
         }
         const provider = b.provider
-        if (provider === "stripe") {
-          if (!b.checkout_url) throw new Error("Hosted provider checkout is unavailable.")
-          const checkoutUrl = new URL(b.checkout_url)
-          if (checkoutUrl.protocol !== "https:" || !checkoutUrl.hostname.endsWith(".stripe.com")) {
-            throw new Error("The provider returned an invalid secure checkout address.")
-          }
-          window.location.assign(checkoutUrl.toString())
-          return
-        }
         setData({ ...b, provider, provider_mode: b.provider_mode || null })
       })
       .catch((e) => setError(e.message))
@@ -56,11 +46,27 @@ export default function Checkout({ token }: { token: string }) {
       setBusy(false)
     }
   }
+  async function continueToStripe() {
+    setBusy(true)
+    try {
+      const r = await fetch("/api/checkout/prepare", {
+        method: "POST",
+        headers: { "X-Agora-Checkout-Token": token },
+        cache: "no-store",
+      })
+      const b: { checkout_url?: string; error?: { message?: string } } = await r.json()
+      if (!r.ok || !b.checkout_url) throw new Error(b.error?.message || "Secure checkout could not be opened.")
+      const url = new URL(b.checkout_url)
+      if (url.protocol !== "https:" || url.hostname !== "checkout.stripe.com") throw new Error("The provider returned an invalid secure checkout address.")
+      window.location.assign(url.toString())
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Unable to open secure checkout")
+      setBusy(false)
+    }
+  }
   return (
     <main className="checkout-page">
-      <Link className="wordmark" href="/">
-        agora<span>·</span>
-      </Link>
+      <span className="wordmark">agora<span>·</span></span>
       {data && (
         <span className="sandbox-mark">
           {data.provider === "stripe"
@@ -92,7 +98,7 @@ export default function Checkout({ token }: { token: string }) {
           <p>
             {data.provider === "stripe"
               ? data.status === "pending"
-                ? "Payment status is waiting for confirmation from the payment provider. This page does not confirm payment. Check again later or return to the merchant."
+                ? "Payment status is waiting for confirmation from the payment provider. This page does not confirm payment. Check back with the merchant for an update."
                 : `The payment provider reports this payment as ${data.status}.`
               : data.status === "succeeded"
               ? "Your simulated payment succeeded."
@@ -132,12 +138,10 @@ export default function Checkout({ token }: { token: string }) {
                 Simulate decline
               </button>
             </form>
-          ) : (
-            <button className="checkout-control" onClick={() => location.assign("/?view=Payments")}>
-              {data.provider === "stripe" ? "Return to merchant" : "Back to payments"}
-            </button>
-          )}
-          <p className="form-note">{data.provider === "stripe" ? "Payment status is finalized by verified provider events." : "No live charge will be made."}</p>
+          ) : data.status === "pending" && data.provider === "stripe" ? (
+            <button className="checkout-control" disabled={busy} onClick={() => void continueToStripe()}>{busy ? "Connecting to Stripe…" : "Continue to payment"}</button>
+          ) : null}
+          <p className="form-note">{data.provider === "stripe" ? "Payment status is finalized by verified provider events. You may close this page when you’re done." : data.status === "pending" ? "No live charge will be made." : "You may close this page when you’re done."}</p>
           <code>{data.id}</code>
         </>
       )}
