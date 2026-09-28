@@ -178,6 +178,7 @@ export default function Console() {
   const [authEmail, setAuthEmail] = useState("")
   const [setupToken, setSetupToken] = useState("")
   const [setupTokenFromFragment, setSetupTokenFromFragment] = useState(false)
+  const [setupLinkExpired, setSetupLinkExpired] = useState(false)
   const [setupPassword, setSetupPassword] = useState("")
   const [setupPasswordConfirm, setSetupPasswordConfirm] = useState("")
   const [authRole, setAuthRole] = useState<"owner" | "merchant">("owner")
@@ -290,7 +291,7 @@ export default function Console() {
     if (recoveryPending.current) return
     try {
       const response = await fetch("/api/auth/session", { cache: "no-store" })
-      const body = await response.json() as ApiResponse & { role?: string; tenant_id?: string; access_status?: string; mfa_stage?: string; authenticated?: boolean; password_change_required?: boolean; owner_setup_required?: boolean }
+      const body = await response.json() as ApiResponse & { role?: string; tenant_id?: string; access_status?: string; mfa_stage?: string; authenticated?: boolean; password_change_required?: boolean; owner_setup_required?: boolean; owner_setup_expired?: boolean }
       if (!response.ok)
         throw new Error(
           body.error?.message || "Unable to verify account access."
@@ -298,7 +299,8 @@ export default function Console() {
       setAuthRole(body.role === "merchant" ? "merchant" : "owner")
       setPasswordChangeRequired(body.password_change_required === true)
       setAuthTenantId(typeof body.tenant_id === "string" ? body.tenant_id : "")
-      if (body.owner_setup_required) {
+      if (body.owner_setup_required || body.owner_setup_expired) {
+        setSetupLinkExpired(body.owner_setup_expired === true)
         setData(null)
         setAuthState("setup")
         return
@@ -1019,7 +1021,7 @@ export default function Console() {
           <Link className="wordmark" href="/" aria-label="Agora home">agora<span>·</span></Link>
           <h1 id="owner-setup-title">Set up your Agora workspace</h1>
           <p>Create the owner account for this installation, then secure it with an authenticator app.</p>
-          {!setupToken && <p role="status">Open the one-time setup link printed by the installer. Its token is only accepted once.</p>}
+          {setupLinkExpired ? <p role="status">The setup link expired. On the host, run <code>node current/scripts/reset-owner-setup.mjs</code> from the Agora install directory, then open the replacement link saved in the private credentials file.</p> : !setupToken && <p role="status">Open the one-time setup link printed by the installer. Its token is only accepted once.</p>}
           <form className="form-stack" onSubmit={claimOwnerSetup}>
             <div className="field">
               <Label htmlFor="setup-email">Owner email</Label>
