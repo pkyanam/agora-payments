@@ -3,10 +3,19 @@
 set -euo pipefail
 has_interactive_tty() { [[ -r /dev/tty ]] && ( true </dev/tty ) 2>/dev/null; }
 ORIGINAL_ARGS=("$@")
+for arg in "${ORIGINAL_ARGS[@]}"; do
+  if [[ "$arg" == --target=boat ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+    exec bash "$SCRIPT_DIR/install-boat.sh" "${ORIGINAL_ARGS[@]}"
+  fi
+done
 for ((i = 0; i + 1 < ${#ORIGINAL_ARGS[@]}; i++)); do
   if [[ "${ORIGINAL_ARGS[$i]}" == --target && "${ORIGINAL_ARGS[$((i + 1))]}" == cloudflare ]]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
     exec bash "$SCRIPT_DIR/install-cloud.sh" "${ORIGINAL_ARGS[@]}"
+  elif [[ "${ORIGINAL_ARGS[$i]}" == --target && "${ORIGINAL_ARGS[$((i + 1))]}" == boat ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+    exec bash "$SCRIPT_DIR/install-boat.sh" "${ORIGINAL_ARGS[@]}"
   fi
 done
 
@@ -28,6 +37,7 @@ Agora Community installer
 
 Usage: bash install.sh [options]
   --target local              Install the persistent Node + SQLite app (default)
+  --target boat               Install into a Boat sandbox using its stable HTTPS host
   --dir ABSOLUTE_PATH         Installation directory (default: ~/.local/share/agora)
   --url ORIGIN                 Public origin (default: http://localhost:3000)
   --owner-email EMAIL          First owner login email
@@ -57,7 +67,7 @@ while (($#)); do
 done
 
 if ((TARGET_SET == 0 && NON_INTERACTIVE == 0)) && has_interactive_tty; then
-  printf 'Install target [local/cloudflare] (local): ' > /dev/tty
+  printf 'Install target [local/boat/cloudflare] (local): ' > /dev/tty
   IFS= read -r TARGET_ANSWER < /dev/tty || TARGET_ANSWER=
   TARGET="${TARGET_ANSWER:-local}"
 fi
@@ -66,7 +76,11 @@ if [[ "$TARGET" == cloudflare ]]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
   exec bash "$SCRIPT_DIR/install-cloud.sh" "${ORIGINAL_ARGS[@]}"
 fi
-[[ "$TARGET" == local ]] || { printf 'Unsupported target: %s (currently supported: local, cloudflare)\n' "$TARGET" >&2; exit 2; }
+if [[ "$TARGET" == boat ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  exec bash "$SCRIPT_DIR/install-boat.sh" "${ORIGINAL_ARGS[@]}"
+fi
+[[ "$TARGET" == local ]] || { printf 'Unsupported target: %s (currently supported: local, boat, cloudflare)\n' "$TARGET" >&2; exit 2; }
 [[ "$APP_DIR" == /* ]] || { printf '%s\n' '--dir must be an absolute path.' >&2; exit 2; }
 [[ "$PORT" =~ ^[0-9]+$ ]] && ((PORT > 0 && PORT < 65536)) || { printf '%s\n' '--port must be between 1 and 65535.' >&2; exit 2; }
 ORIGIN="$(node --input-type=module - "$ORIGIN" <<'NODE'
