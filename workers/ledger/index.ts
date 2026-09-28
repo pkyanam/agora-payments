@@ -4,13 +4,20 @@ import { createService, requireScope, requireProviderMode, paymentProviderReadin
 import { setMfaCookie } from '../../lib/server/admin-auth';
 import { createStripeCheckout, createStripeRefund, deauthorizeStripeAccount, exchangeStripeOAuthCode, getStripeConnectedAccount, retrieveStripeCheckout } from '../../lib/server/stripe';
 import type { Payment } from '../../lib/types';
+import { testStripeApiKey } from '../../lib/server/stripe';
+import { dispatchWebhookBatch, enqueueWebhookEvent } from '../../lib/server/outgoing-webhooks';
 
 interface Env {
   AGORA_LEDGER: DurableObjectNamespace<AgoraLedgerDO>;
   AGORA_WORKSPACE_ID?: string;
   AGORA_DEPLOYMENT_ENV?: string;
+  AGORA_DEPLOYMENT_TYPE?: string;
+  AGORA_DEPLOYMENT_TARGET?: string;
+  AGORA_VERSION?: string;
+  AGORA_SECRETS_ENCRYPTION_KEY?: string;
   AGORA_PUBLIC_ORIGIN: string;
   AGORA_OWNER_EMAIL: string;
+  AGORA_WORKSPACE_NAME?: string;
   AGORA_PAYMENT_PROVIDER?: string;
   AGORA_STRIPE_MODE?: string;
   AGORA_ADMIN_PASSWORD: string;
@@ -45,11 +52,16 @@ CREATE TABLE IF NOT EXISTS provider_oauth_states(state_hash TEXT PRIMARY KEY,ten
 CREATE TABLE IF NOT EXISTS merchant_invites(token_hash TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,email TEXT NOT NULL,expires_at TEXT NOT NULL,used_at TEXT,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS merchant_users(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,email TEXT NOT NULL,password_salt TEXT NOT NULL,password_hash TEXT NOT NULL,mfa_secret TEXT,mfa_confirmed INTEGER NOT NULL DEFAULT 0,last_counter INTEGER NOT NULL DEFAULT -1,recovery_hashes TEXT NOT NULL DEFAULT '[]',disabled INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(tenant_id,email));
 CREATE TABLE IF NOT EXISTS revoked_sessions(token_hash TEXT PRIMARY KEY,expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS webhook_endpoints(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,url TEXT NOT NULL,provider_mode TEXT NOT NULL CHECK(provider_mode IN ('test','live')),event_types TEXT NOT NULL,secret_ciphertext TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','paused','archived')),created_at TEXT NOT NULL,updated_at TEXT NOT NULL,secret_updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS webhook_deliveries(id TEXT PRIMARY KEY,endpoint_id TEXT NOT NULL,event_id TEXT NOT NULL,event_type TEXT NOT NULL,tenant_id TEXT NOT NULL,payload TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','delivering','delivered','failed','paused','skipped_mode')),attempt_count INTEGER NOT NULL DEFAULT 0,next_attempt_at TEXT NOT NULL,last_attempt_at TEXT,delivered_at TEXT,last_http_status INTEGER,last_error TEXT,lease_token TEXT,locked_until TEXT,created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS webhook_delivery_due ON webhook_deliveries(status,next_attempt_at);
+CREATE INDEX IF NOT EXISTS webhook_delivery_endpoint ON webhook_deliveries(endpoint_id,created_at,id);
+CREATE TABLE IF NOT EXISTS webhook_attempts(id TEXT PRIMARY KEY,delivery_id TEXT NOT NULL,attempt INTEGER NOT NULL,started_at TEXT NOT NULL,finished_at TEXT,http_status INTEGER,duration_ms INTEGER,error TEXT,response_excerpt TEXT NOT NULL DEFAULT '',UNIQUE(delivery_id,attempt));
 CREATE INDEX IF NOT EXISTS payment_created ON payments(created_at);
 CREATE INDEX IF NOT EXISTS event_created ON events(created_at);
 `;
 
-function makeStore(storage: DurableObjectStorage): LedgerStore {
+function makeStore(storage: DurableObjectStorage, scheduleWebhookAlarm:()=>void): LedgerStore {
   const sql = storage.sql;
   const store: LedgerStore = {
     one<T>(query: string, ...args: SqlValue[]) {
@@ -71,8 +83,9 @@ function makeStore(storage: DurableObjectStorage): LedgerStore {
       return new Date().toISOString();
     },
     event(type: string, actor: string, object_id: string, data: object = {}, tenantId = 'owner') {
-      const eventId = store.id('evt');
-      store.run('INSERT INTO events(id,type,actor,object_id,data,created_at,tenant_id) VALUES(?,?,?,?,?,?,?)', eventId, type, actor, object_id, JSON.stringify(data), store.now(), tenantId);
+      const eventId = store.id('evt'), created=store.now();
+      store.run('INSERT INTO events(id,type,actor,object_id,data,created_at,tenant_id) VALUES(?,?,?,?,?,?,?)', eventId, type, actor, object_id, JSON.stringify(data), created, tenantId);
+      enqueueWebhookEvent(store,{id:eventId,type,actor,object_id,data,tenant_id:tenantId,created_at:created});
       return eventId;
     },
     journal(reference: string, amount: number, account: string, tenantId = 'owner') {
@@ -80,6 +93,7 @@ function makeStore(storage: DurableObjectStorage): LedgerStore {
       store.run('INSERT INTO journal(id,reference_id,account,amount,created_at,tenant_id) VALUES(?,?,?,?,?,?)', store.id('jrn'), reference, account, amount, at, tenantId);
       store.run('INSERT INTO journal(id,reference_id,account,amount,created_at,tenant_id) VALUES(?,?,?,?,?,?)', store.id('jrn'), reference, 'merchant_proceeds', -amount, at, tenantId);
     },
+    scheduleWebhookAlarm,
   };
   return store;
 }
@@ -100,12 +114,14 @@ export class AgoraLedgerDO extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.store = makeStore(ctx.storage);
+    this.store = makeStore(ctx.storage,()=>ctx.waitUntil(ctx.storage.setAlarm(Date.now()+1000)));
     this.service = createService(this.store, env);
     ctx.storage.sql.exec(schema);
     for (const [table, column, definition] of [
       ['products', 'tenant_id', "TEXT NOT NULL DEFAULT 'owner'"],
+      ['products', 'archived_at', 'TEXT'],
       ['payments', 'tenant_id', "TEXT NOT NULL DEFAULT 'owner'"],
+      ['payments', 'archived_at', 'TEXT'],
       ['credentials', 'tenant_id', "TEXT NOT NULL DEFAULT 'owner'"],
       ['credentials', 'provider_mode', "TEXT NOT NULL DEFAULT 'sandbox'"],
       ['refunds', 'tenant_id', "TEXT NOT NULL DEFAULT 'owner'"],
@@ -128,7 +144,7 @@ export class AgoraLedgerDO extends DurableObject<Env> {
     }
     ctx.storage.sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS tenant_email_unique ON tenants(email COLLATE NOCASE)");
     ctx.storage.sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS merchant_user_email_unique ON merchant_users(email COLLATE NOCASE)");
-    ctx.storage.sql.exec("INSERT OR IGNORE INTO tenants(id,business_name,email,status,provider,created_at,approved_at) VALUES('owner','Belweave','info@belweave.com','approved','sandbox',?,?)", this.store.now(), this.store.now());
+    ctx.storage.sql.exec("INSERT OR IGNORE INTO tenants(id,business_name,email,status,provider,created_at,approved_at) VALUES('owner',?,?,'approved','stripe',?,?)", this.env.AGORA_WORKSPACE_NAME||'Agora workspace',this.env.AGORA_OWNER_EMAIL,this.store.now(),this.store.now());
     const mfaMigration = this.service.migrateMfaEncryptionKeys();
     console.info('Agora MFA key migration', {
       migrated: mfaMigration.migrated,
@@ -136,17 +152,45 @@ export class AgoraLedgerDO extends DurableObject<Env> {
     });
   }
 
+  async alarm(){
+    await dispatchWebhookBatch(this.store,this.env as unknown as Record<string,string|undefined>);
+    const row=this.store.one<{wake:string|null}>("SELECT MIN(CASE WHEN status='pending' THEN next_attempt_at ELSE locked_until END) AS wake FROM webhook_deliveries WHERE status IN ('pending','delivering')");
+    if(row?.wake){const at=Date.parse(row.wake);if(Number.isFinite(at))await this.ctx.storage.setAlarm(Math.max(Date.now()+1000,at));}
+  }
+
   async fetch(request: Request): Promise<Response> {
     const requestId = this.store.id('req');
     try {
       const url = new URL(request.url);
       if (url.pathname === '/__health' && request.method === 'GET') {
-        const readiness = paymentProviderReadiness(this.env);
+        const readiness = this.service.paymentProviderReadiness();
         return json({ ok: true, storage: 'durable-object-sqlite-v1', deployment: this.env.AGORA_DEPLOYMENT_ENV || 'unspecified', provider_status: readiness.provider_status, checkout_enabled: readiness.checkout_enabled, ...(readiness.provider_mode ? { provider_mode: readiness.provider_mode } : {}) }, 200, { 'X-Request-Id': requestId });
       }
       const method = request.method;
       const path = url.pathname;
 
+      if (path === '/api/health' && method === 'GET') {
+        const readiness=this.service.paymentProviderReadiness();const config=this.service.stripeConfigSummary();
+        return json({status:'ok',deployment_type:this.env.AGORA_DEPLOYMENT_TYPE||'community',deployment_target:this.env.AGORA_DEPLOYMENT_TARGET||'cloudflare-worker',current_version:this.env.AGORA_VERSION||'0.0.1',provider:{name:config.provider,mode:config.mode,status:readiness.provider_status,checkout_enabled:readiness.checkout_enabled,webhook_url:config.webhook_url,configured:config.configured[config.mode]}},200,{'X-Request-Id':requestId});
+      }
+      if (path === '/api/console/stripe-config' && method === 'GET') {
+        const actor=this.service.consoleActor(request);if(actor.tenant_id!=='owner')throw new ApiError(403,'permission_denied','Only the workspace owner can configure Stripe.');
+        return json({...this.service.stripeConfigSummary(),...this.service.paymentProviderReadiness()},200,{'X-Request-Id':requestId});
+      }
+      if(path==='/api/console/activity'&&method==='GET'){
+        const actor=this.service.consoleActor(request);const value=url.searchParams.get('range')||'30d';const ranges=new Set(['1h','24h','7d','30d','90d','1y','all','custom']);if(!ranges.has(value))throw new ApiError(422,'invalid_request','Choose a supported activity range.');const from=url.searchParams.get('from')||undefined,to=url.searchParams.get('to')||undefined;if(value==='custom'&&(!from||!to))throw new ApiError(422,'invalid_request','Custom range needs a start and end date.');try{return json(this.service.paymentActivity(actor.tenant_id,value as '1h'|'24h'|'7d'|'30d'|'90d'|'1y'|'all'|'custom',from,to),200,{'X-Request-Id':requestId});}catch(error){if(error instanceof Error)throw new ApiError(422,'invalid_range',error.message);throw error;}
+      }
+      if (path === '/api/console/stripe-config' && method === 'PATCH') {
+        const actor=this.service.consoleActor(request,true);if(actor.tenant_id!=='owner')throw new ApiError(403,'permission_denied','Only the workspace owner can configure Stripe.');
+        const body=await bodyOf(request);const requestedOrigin=body&&typeof body==='object'?(body as {public_origin?:unknown}).public_origin:undefined;const requestOrigin=request.headers.get('origin');if(typeof requestedOrigin==='string'&&requestOrigin&&new URL(requestedOrigin).origin!==requestOrigin)throw new ApiError(422,'origin_mismatch','Public app URL must match the origin used to sign in.');const result=this.service.setStripeConfig(body);return json({...result,...this.service.paymentProviderReadiness()},200,{'X-Request-Id':requestId});
+      }
+      if (path === '/api/console/stripe-config' && method === 'POST') {
+        const actor=this.service.consoleActor(request,true);if(actor.tenant_id!=='owner')throw new ApiError(403,'permission_denied','Only the workspace owner can configure Stripe.');
+        const body=await bodyOf(request) as {action?:unknown;mode?:unknown};if(body.action!=='test'||(body.mode!=='test'&&body.mode!=='live'))throw new ApiError(422,'invalid_request','Provide action test and mode test or live.');
+        const mode=body.mode;const secret=this.service.stripeSecret(mode,'api');if(!secret)throw new ApiError(409,'stripe_key_missing',`Configure a Stripe ${mode} API key first.`);
+        const account=await testStripeApiKey(secret,mode);const configured=this.service.stripeConfigSummary().configured[mode];
+        return json({ok:true,mode,account_id:account.account_id,webhook:{configured:configured.webhook_secret,verified:configured.webhook_verified},message:configured.webhook_verified?'Stripe credentials and webhook delivery are verified.':'Stripe credentials work. Send a signed account.updated test event to verify webhook delivery.'},200,{'X-Request-Id':requestId});
+      }
       if (path === '/api/auth/session' && method === 'GET') return json(this.service.authSession(request), 200, { 'X-Request-Id': requestId });
       if (path === '/api/auth/login' && method === 'POST') {
         const body = await bodyOf(request);
@@ -204,13 +248,13 @@ export class AgoraLedgerDO extends DurableObject<Env> {
         const actor = this.service.consoleActor(request);
         const tenantId = decodeURIComponent(connectMatch[1]);
         if (actor.tenant_id !== 'owner' && actor.tenant_id !== tenantId) throw new ApiError(404, 'not_found', 'Merchant workspace not found.');
-        const mode = this.env.AGORA_STRIPE_MODE;
+        const mode = this.service.stripeRuntimeEnvironment().AGORA_STRIPE_MODE;
         const linked = mode === 'test' || mode === 'live' ? this.service.stripeAccountForTenant(tenantId, mode) : null;
         return json({ provider: 'stripe', mode: mode === 'test' || mode === 'live' ? mode : null, status: linked?.status || 'not_connected', charges_enabled: linked?.charges_enabled || false }, 200, { 'X-Request-Id': requestId });
       }
       if (connectMatch && method === 'POST') {
         const actor = this.service.consoleActor(request, true);
-        const mode = this.env.AGORA_STRIPE_MODE;
+        const mode = this.service.stripeRuntimeEnvironment().AGORA_STRIPE_MODE;
         const clientId = mode === 'live' ? this.env.STRIPE_LIVE_CONNECT_CLIENT_ID : mode === 'test' ? this.env.STRIPE_TEST_CONNECT_CLIENT_ID : undefined;
         if ((mode !== 'test' && mode !== 'live') || !clientId) throw new ApiError(503, 'provider_not_configured', 'Stripe Connect is not configured for this mode.');
         const origin = this.env.AGORA_PUBLIC_ORIGIN;
@@ -222,14 +266,14 @@ export class AgoraLedgerDO extends DurableObject<Env> {
 
       if (connectMatch && method === 'DELETE') {
         const actor = this.service.consoleActor(request, true);
-        const mode = this.env.AGORA_STRIPE_MODE;
+        const mode = this.service.stripeRuntimeEnvironment().AGORA_STRIPE_MODE;
         if (mode !== 'test' && mode !== 'live') throw new ApiError(503, 'provider_not_configured', 'Stripe Connect is not configured for this mode.');
         const tenantId = decodeURIComponent(connectMatch[1]);
         if (actor.tenant_id !== 'owner' && actor.tenant_id !== tenantId) throw new ApiError(404, 'not_found', 'Merchant workspace not found.');
         const linked = this.service.stripeAccountForTenant(tenantId, mode);
         if (!linked) return json({ disconnected: false }, 200, { 'X-Request-Id': requestId });
         const clientId = mode === 'live' ? this.env.STRIPE_LIVE_CONNECT_CLIENT_ID : this.env.STRIPE_TEST_CONNECT_CLIENT_ID;
-        const secretKey = mode === 'live' ? this.env.STRIPE_LIVE_SECRET_KEY : this.env.STRIPE_TEST_SECRET_KEY;
+        const secretKey = (mode === 'test' || mode === 'live') ? this.service.stripeSecret(mode, 'api') : undefined;
         if (!clientId || !secretKey || (mode === 'test' && !secretKey.startsWith('sk_test_'))) throw new ApiError(503, 'provider_not_configured', 'Stripe Connect disconnection is not configured for this mode.');
         const result = this.service.disconnectStripeAccount(actor, tenantId, mode);
         await deauthorizeStripeAccount(secretKey, clientId, linked.account_id);
@@ -239,9 +283,9 @@ export class AgoraLedgerDO extends DurableObject<Env> {
       if (path === '/api/provider/stripe/callback' && method === 'GET') {
         const actor = this.service.consoleActor(request);
         const origin = this.env.AGORA_PUBLIC_ORIGIN;
-        const mode = this.env.AGORA_STRIPE_MODE;
+        const mode = this.service.stripeRuntimeEnvironment().AGORA_STRIPE_MODE;
         const clientId = mode === 'live' ? this.env.STRIPE_LIVE_CONNECT_CLIENT_ID : mode === 'test' ? this.env.STRIPE_TEST_CONNECT_CLIENT_ID : undefined;
-        const secretKey = mode === 'live' ? this.env.STRIPE_LIVE_SECRET_KEY : mode === 'test' ? this.env.STRIPE_TEST_SECRET_KEY : undefined;
+        const secretKey = (mode === 'test' || mode === 'live') ? this.service.stripeSecret(mode, 'api') : undefined;
         if (!origin || (mode !== 'test' && mode !== 'live') || !clientId || !secretKey) throw new ApiError(503, 'provider_not_configured', 'Stripe Connect is not configured for this mode.');
         const callback = new URL(request.url);
         if (callback.searchParams.has('error')) return Response.redirect(new URL('/?view=Agents&stripe_connect=failed', origin), 303);
@@ -304,11 +348,30 @@ export class AgoraLedgerDO extends DurableObject<Env> {
         return json({ checkout_url: target.toString() }, 200, { 'X-Request-Id': requestId, 'Referrer-Policy': 'no-referrer', 'Set-Cookie': cookie });
       }
 
+      const archiveProductMatch=path.match(/^\/api\/console\/products\/([^/]+)$/);
+      if(archiveProductMatch&&method==='PATCH'){const actor=this.service.consoleActor(request,true);if(actor.tenant_id!=='owner')throw new ApiError(403,'permission_denied','Only the workspace owner can archive products.');const body=await bodyOf(request) as {archived?:unknown};if(typeof body.archived!=='boolean')throw new ApiError(422,'invalid_request','Provide archived as true or false.');return json(this.service.archiveProduct(actor,decodeURIComponent(archiveProductMatch[1]),body.archived),200,{'X-Request-Id':requestId});}
+      const archivePaymentMatch=path.match(/^\/api\/console\/payments\/([^/]+)$/);
+      if(archivePaymentMatch&&method==='PATCH'){const actor=this.service.consoleActor(request,true);if(actor.tenant_id!=='owner')throw new ApiError(403,'permission_denied','Only the workspace owner can archive payments.');const body=await bodyOf(request) as {archived?:unknown};if(typeof body.archived!=='boolean')throw new ApiError(422,'invalid_request','Provide archived as true or false.');return json(this.service.archivePayment(actor,decodeURIComponent(archivePaymentMatch[1]),body.archived),200,{'X-Request-Id':requestId});}
       if (path === '/api/console' && method === 'GET') {
         const actor = this.service.consoleActor(request);
-        const readiness = paymentProviderReadiness(this.env);
-        return json({ ...this.service.snapshot(actor.tenant_id), mode: this.env.AGORA_PAYMENT_PROVIDER === 'stripe' ? 'stripe' : 'sandbox', provider_status: readiness.provider_status, checkout_enabled: readiness.checkout_enabled, ...(readiness.provider_mode ? { provider_mode: readiness.provider_mode } : {}) }, 200, { 'X-Request-Id': requestId });
+        const readiness = this.service.paymentProviderReadiness();
+        return json({ ...this.service.snapshot(actor.tenant_id,url.searchParams.get('include_archived')==='1'||url.searchParams.get('include_archived')==='true'), mode: this.service.stripeRuntimeEnvironment().AGORA_PAYMENT_PROVIDER === 'stripe' ? 'stripe' : 'sandbox', provider_status: readiness.provider_status, checkout_enabled: readiness.checkout_enabled, ...(readiness.provider_mode ? { provider_mode: readiness.provider_mode } : {}) }, 200, { 'X-Request-Id': requestId });
       }
+      if (path === '/api/console/webhooks') {
+        const actor=this.service.consoleActor(request,method!=='GET');if(actor.tenant_id!=='owner')throw new ApiError(403,'permission_denied','Only the workspace owner can manage outgoing webhooks.');
+        if(method==='GET')return json({data:this.service.listWebhookEndpoints(actor,url.searchParams.get('include_archived')==='true')},200,{'X-Request-Id':requestId});
+        if(method==='POST')return json(this.service.createWebhookEndpoint(actor,await bodyOf(request)),201,{'X-Request-Id':requestId});
+      }
+      const webhookEndpoint=path.match(/^\/api\/console\/webhooks\/([^/]+)$/);
+      if(webhookEndpoint){const actor=this.service.consoleActor(request,true);if(actor.tenant_id!=='owner')throw new ApiError(403,'permission_denied','Only the workspace owner can manage outgoing webhooks.');const endpointId=decodeURIComponent(webhookEndpoint[1]);if(method==='PATCH'){const body=await bodyOf(request) as {action?:unknown};if(body?.action==='rotate_secret')return json(this.service.rotateWebhookSecret(actor,endpointId),200,{'X-Request-Id':requestId});return json(this.service.updateWebhookEndpoint(actor,endpointId,body),200,{'X-Request-Id':requestId});}if(method==='DELETE')return json(this.service.archiveWebhookEndpoint(actor,endpointId),200,{'X-Request-Id':requestId});}
+      const webhookRotate=path.match(/^\/api\/console\/webhooks\/([^/]+)\/rotate-secret$/);
+      if(webhookRotate&&method==='POST'){const actor=this.service.consoleActor(request,true);if(actor.tenant_id!=='owner')throw new ApiError(403,'permission_denied','Only the workspace owner can rotate outgoing webhook secrets.');return json(this.service.rotateWebhookSecret(actor,decodeURIComponent(webhookRotate[1])),200,{'X-Request-Id':requestId});}
+      const webhookDeliveries=path.match(/^\/api\/console\/webhooks\/([^/]+)\/deliveries$/);
+      if(webhookDeliveries&&method==='GET'){const actor=this.service.consoleActor(request);if(actor.tenant_id!=='owner')throw new ApiError(403,'permission_denied','Only the workspace owner can inspect outgoing webhooks.');return json(this.service.listWebhookDeliveries(actor,decodeURIComponent(webhookDeliveries[1]),url.searchParams.get('cursor')||undefined,Number(url.searchParams.get('limit')||25)),200,{'X-Request-Id':requestId});}
+      const webhookDelivery=path.match(/^\/api\/console\/webhooks\/([^/]+)\/deliveries\/([^/]+)$/);
+      if(webhookDelivery&&method==='GET'){const actor=this.service.consoleActor(request);if(actor.tenant_id!=='owner')throw new ApiError(403,'permission_denied','Only the workspace owner can inspect outgoing webhooks.');return json(this.service.webhookDeliveryDetail(actor,decodeURIComponent(webhookDelivery[1]),decodeURIComponent(webhookDelivery[2])),200,{'X-Request-Id':requestId});}
+      const webhookReplay=path.match(/^\/api\/console\/webhooks\/([^/]+)\/deliveries\/([^/]+)\/replay$/);
+      if(webhookReplay&&method==='POST'){const actor=this.service.consoleActor(request,true);if(actor.tenant_id!=='owner')throw new ApiError(403,'permission_denied','Only the workspace owner can replay outgoing webhooks.');return json(this.service.replayWebhookDelivery(actor,decodeURIComponent(webhookReplay[1]),decodeURIComponent(webhookReplay[2])),202,{'X-Request-Id':requestId});}
       if (path === '/api/console' && method === 'POST') {
         const body = await bodyOf(request) as { action?: string; payload?: unknown };
         const actor = this.service.consoleActor(request, true);
@@ -322,13 +385,11 @@ export class AgoraLedgerDO extends DurableObject<Env> {
           return json(await this.createPaymentCheckout(actor, 'create_payment', request.headers.get('idempotency-key'), body.payload), 200, { 'X-Request-Id': requestId });
         }
         if (body.action === 'refund') {
-          if (!paymentProviderReadiness(this.env).checkout_enabled) throw new ApiError(503, 'provider_not_configured', 'Refunds are unavailable until a mode-matched processor API key and webhook secret are configured.');
           const result = this.service.mutate(actor, body.action, request.headers.get('idempotency-key'), body.payload, () => this.service.createRefund(actor, body.payload)) as Record<string, unknown>;
           if (result.status === 'pending' && result.provider === 'stripe') return json(await this.finishRefundOrReplay(actor.tenant_id, result), 200, { 'X-Request-Id': requestId });
           return json(result, 200, { 'X-Request-Id': requestId });
         }
         if (body.action === 'resolve_approval') {
-          if (!paymentProviderReadiness(this.env).checkout_enabled) throw new ApiError(503, 'provider_not_configured', 'Refunds are unavailable until a mode-matched processor API key and webhook secret are configured.');
           const result = this.service.mutate(actor, body.action, request.headers.get('idempotency-key'), body.payload, () => this.service.resolveApproval(actor, body.payload)) as { refund?: Record<string, unknown> };
           if (result.refund?.status === 'pending' && result.refund.provider === 'stripe') return json({ ...result, refund: await this.finishRefundOrReplay(actor.tenant_id, result.refund) }, 200, { 'X-Request-Id': requestId });
           return json(result, 200, { 'X-Request-Id': requestId });
@@ -343,7 +404,7 @@ export class AgoraLedgerDO extends DurableObject<Env> {
           return json({ email: invite.email, expires_at: invite.expires_at, invite_url: `${origin}/invite#${invite.token}` }, 200, { 'X-Request-Id': requestId, 'Referrer-Policy': 'no-referrer' });
         }
         if (body.action === 'create_key') {
-          if (!paymentProviderReadiness(this.env).checkout_enabled) throw new ApiError(503, 'provider_not_configured', 'API keys are unavailable until a mode-matched processor API key and webhook secret are configured.');
+          if (!this.service.paymentProviderReadiness().checkout_enabled) throw new ApiError(503, 'provider_not_configured', 'API keys are unavailable until a mode-matched processor API key and webhook secret are configured.');
           let secret: string | undefined;
           const result = this.service.mutate(actor, body.action, request.headers.get('idempotency-key'), body.payload, () => {
             const created = this.service.createCredential(actor, body.payload);
@@ -405,8 +466,8 @@ export class AgoraLedgerDO extends DurableObject<Env> {
         }
         if (method === 'POST' && table !== 'events') {
           if (table === 'products') {
-            const provider = this.env.AGORA_PAYMENT_PROVIDER || 'sandbox';
-            const mode = provider === 'stripe' ? this.env.AGORA_STRIPE_MODE : 'sandbox';
+            const provider = this.service.stripeRuntimeEnvironment().AGORA_PAYMENT_PROVIDER || 'sandbox';
+            const mode = provider === 'stripe' ? this.service.stripeRuntimeEnvironment().AGORA_STRIPE_MODE : 'sandbox';
             if (mode !== 'sandbox' && mode !== 'test' && mode !== 'live') throw new ApiError(503, 'provider_not_configured', 'Set AGORA_STRIPE_MODE to test or live.');
             requireProviderMode(actor, mode);
             return json(this.service.mutate(actor, table, request.headers.get('idempotency-key'), body, () => this.service.createProduct(actor, body)), 201, { 'X-Request-Id': requestId });
@@ -415,7 +476,6 @@ export class AgoraLedgerDO extends DurableObject<Env> {
         }
       }
       if (path === '/api/v1/refunds' && method === 'POST') {
-        if (!paymentProviderReadiness(this.env).checkout_enabled) throw new ApiError(503, 'provider_not_configured', 'Refunds are unavailable until a mode-matched processor API key and webhook secret are configured.');
         const body = await bodyOf(request);
         const actor = this.service.authenticate(request);
         if (body && typeof body === 'object' && typeof (body as { payment_id?: unknown }).payment_id === 'string') {
@@ -427,14 +487,13 @@ export class AgoraLedgerDO extends DurableObject<Env> {
       }
       const reconcileMatch = path.match(/^\/api\/v1\/payments\/([A-Za-z0-9_-]{1,80})\/reconcile$/);
       if (reconcileMatch && method === 'POST') {
-        if (!paymentProviderReadiness(this.env).checkout_enabled) throw new ApiError(503, 'provider_not_configured', 'Payment reconciliation is unavailable until a mode-matched processor API key and webhook secret are configured.');
         const actor = this.service.authenticate(request);
         requireScope(actor, 'payments:write');
         this.service.requirePaymentMode(actor, reconcileMatch[1]);
         const context = this.service.stripePaymentReconcileContext(reconcileMatch[1], actor.tenant_id);
         const mode = context.provider_mode;
         if (mode !== 'test' && mode !== 'live') throw new ApiError(409, 'provider_mode_invalid', 'Stripe payment mode is missing.');
-        const secretKey = mode === 'test' ? this.env.STRIPE_TEST_SECRET_KEY : this.env.STRIPE_LIVE_SECRET_KEY;
+        const secretKey = this.service.stripeSecret(mode, 'api');
         if (!secretKey || !(secretKey.startsWith(mode === 'test' ? 'sk_test_' : 'sk_live_') || secretKey.startsWith(mode === 'test' ? 'rk_test_' : 'rk_live_'))) throw new ApiError(503, 'provider_not_configured', 'Stripe reconciliation credentials are not configured for this payment mode.');
         const session = await retrieveStripeCheckout(secretKey, context.provider_session_id!, context.provider_account_id || undefined);
         return json(this.service.reconcileStripePayment(context.id, actor.tenant_id, session), 200, { 'X-Request-Id': requestId });
@@ -461,7 +520,7 @@ export class AgoraLedgerDO extends DurableObject<Env> {
       }
       if (checkoutMatch && method === 'POST') {
         const body = await bodyOf(request);
-        if (this.env.AGORA_DEPLOYMENT_ENV === 'production' || this.env.AGORA_PAYMENT_PROVIDER !== 'sandbox') throw new ApiError(503, 'provider_not_configured', 'Sandbox payment simulation is disabled for this deployment.');
+        if (this.env.AGORA_DEPLOYMENT_ENV === 'production' || this.service.stripeRuntimeEnvironment().AGORA_PAYMENT_PROVIDER !== 'sandbox') throw new ApiError(503, 'provider_not_configured', 'Sandbox payment simulation is disabled for this deployment.');
         return json(this.service.simulate(checkoutMatch[1], body), 200, { 'X-Request-Id': requestId });
       }
       throw new ApiError(404, 'not_found', 'Endpoint not found.');
@@ -477,9 +536,9 @@ export class AgoraLedgerDO extends DurableObject<Env> {
   }
 
   private async createPaymentCheckout(actor: ReturnType<ReturnType<typeof createService>['authenticate']>, route: string, key: string | null, body: unknown) {
-    const readiness = paymentProviderReadiness(this.env);
+    const readiness = this.service.paymentProviderReadiness();
     if (!readiness.checkout_enabled) throw new ApiError(503, 'provider_not_configured', 'Payment acceptance is unavailable until a mode-matched processor API key, webhook secret, and public origin are configured.');
-    const provider = this.env.AGORA_PAYMENT_PROVIDER || 'sandbox';
+    const provider = this.service.stripeRuntimeEnvironment().AGORA_PAYMENT_PROVIDER || 'sandbox';
     const mode = readiness.provider_mode;
     if (provider === 'sandbox') {
       requireProviderMode(actor,'sandbox');
@@ -494,10 +553,10 @@ export class AgoraLedgerDO extends DurableObject<Env> {
       const { checkout_token, tenant_id: _tenantId, ...visible } = payment;
       return { ...visible, checkout_url: `/checkout/${checkout_token}`, provider: 'sandbox' };
     }
-    const secretKey = mode === 'live' ? this.env.STRIPE_LIVE_SECRET_KEY : this.env.STRIPE_TEST_SECRET_KEY;
+    const secretKey = (mode === 'test' || mode === 'live') ? this.service.stripeSecret(mode, 'api') : undefined;
     const prefix = mode === 'live' ? 'live' : 'test';
     if (!mode || !secretKey || !(secretKey.startsWith(`sk_${prefix}_`) || secretKey.startsWith(`rk_${prefix}_`))) throw new ApiError(503, 'provider_not_configured', `Set a mode-matched Stripe ${prefix} API key before enabling checkout.`);
-    const configured = this.env.AGORA_PUBLIC_ORIGIN;
+    const configured = this.service.stripeRuntimeEnvironment().AGORA_PUBLIC_ORIGIN;
     if (!configured) throw new ApiError(503, 'provider_not_configured', 'Set AGORA_PUBLIC_ORIGIN before enabling Stripe Checkout.');
     const connected = actor.tenant_id === 'owner' ? null : this.service.stripeAccountForTenant(actor.tenant_id, mode);
     if (actor.tenant_id !== 'owner' && (!connected || connected.status !== 'connected' || !connected.charges_enabled)) throw new ApiError(409, 'merchant_connection_required', 'This approved merchant must connect a Stripe account with charges enabled.');
@@ -522,7 +581,7 @@ export class AgoraLedgerDO extends DurableObject<Env> {
     const context = this.service.stripeRefundContext(refundId);
     const mode = context.provider_mode;
     if (mode !== 'test' && mode !== 'live') throw new ApiError(409, 'provider_mode_invalid', 'Stripe refund mode is missing.');
-    const secretKey = mode === 'live' ? this.env.STRIPE_LIVE_SECRET_KEY : this.env.STRIPE_TEST_SECRET_KEY;
+    const secretKey = (mode === 'test' || mode === 'live') ? this.service.stripeSecret(mode, 'api') : undefined;
     const prefix = mode === 'live' ? 'live' : 'test';
     if (!secretKey || !(secretKey.startsWith(`sk_${prefix}_`) || secretKey.startsWith(`rk_${prefix}_`))) throw new ApiError(503, 'provider_not_configured', `Set a mode-matched Stripe ${prefix} API key before enabling refunds.`);
     if (tenantId !== context.tenant_id) throw new ApiError(404, 'not_found', 'Refund request not found.');

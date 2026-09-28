@@ -1,6 +1,8 @@
 "use client"
 
 import { useEffect, useState, type FormEvent } from "react"
+import QRCode from "qrcode"
+import Image from "next/image"
 import Link from "next/link"
 
 type InviteStage = "checking" | "password" | "enroll" | "recovery" | "done" | "invalid"
@@ -21,6 +23,7 @@ export default function Invite() {
   const [confirmPassword, setConfirmPassword] = useState("")
   const [secret, setSecret] = useState("")
   const [otpauthUrl, setOtpauthUrl] = useState("")
+  const [qrData, setQrData] = useState<{ uri: string; data: string } | null>(null)
   const [code, setCode] = useState("")
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([])
   const [error, setError] = useState("")
@@ -43,6 +46,14 @@ export default function Invite() {
       }
     }, 0)
   }, [])
+
+  useEffect(() => {
+    let active = true
+    if (otpauthUrl) void QRCode.toDataURL(otpauthUrl, { width: 220, margin: 2, errorCorrectionLevel: "M" })
+      .then((dataUrl) => { if (active) setQrData({ uri: otpauthUrl, data: dataUrl }) })
+      .catch(() => { if (active) setQrData(null) })
+    return () => { active = false }
+  }, [otpauthUrl])
 
   async function submitPassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -194,12 +205,16 @@ export default function Invite() {
         <section className="auth-card" aria-labelledby="invite-title">
           <h1 id="invite-title">Set up an authenticator</h1>
           {email && <p>Merchant account: {email}</p>}
-          <p>Add this account to an authenticator app, then enter its current six-digit code. MFA is required for merchant access.</p>
+          <p>Scan this QR code with your authenticator app, then enter its current six-digit code. The QR is generated in this browser and is not sent to another service.</p>
+          {qrData?.uri === otpauthUrl ? <div className="mfa-qr-wrap"><Image className="mfa-qr" src={qrData.data} alt="Authenticator setup QR code" width={220} height={220} unoptimized /><span>Scan with your authenticator app</span></div> : <p className="form-note" role="status">Preparing a private QR code… If it does not appear, use the setup key below.</p>}
           <div className="mfa-setup-key">
+            <details className="mfa-manual-setup">
+            <summary>Set up manually instead</summary>
             <span>Setup key</span>
             <code>{secret}</code>
             <button type="button" className="auth-secondary" onClick={() => void copy(secret)}>Copy setup key</button>
             {otpauthUrl && <button type="button" className="auth-secondary" onClick={() => void copy(otpauthUrl)}>Copy authenticator setup URI</button>}
+            </details>
           </div>
           <form onSubmit={enrollAuthenticator} className="form-stack">
             <label htmlFor="merchant-mfa-code">Authenticator code</label>

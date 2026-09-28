@@ -20,6 +20,20 @@ function stripeError(status:number,code:string,message:string){return new ApiErr
 export function stripeApiKeyMatchesMode(key:string|undefined,mode:'test'|'live'){return typeof key==='string'&&new RegExp(`^(?:sk|rk)_${mode}_[A-Za-z0-9]+$`).test(key);}
 export function stripeSecretKeyMatchesMode(key:string|undefined,mode:'test'|'live'){return typeof key==='string'&&new RegExp(`^sk_${mode}_[A-Za-z0-9]+$`).test(key);}
 
+/** Credential check only: reads the connected Stripe account and never creates a charge. */
+export async function testStripeApiKey(secretKey:string, mode:'test'|'live', fetcher:typeof fetch=fetch) {
+ if(!stripeApiKeyMatchesMode(secretKey,mode))throw stripeError(422,'stripe_key_mode_mismatch',`The configured key is not a Stripe ${mode} key.`);
+ let response:Response;
+ try{response=await fetcher('https://api.stripe.com/v1/account',{headers:{Authorization:`Bearer ${secretKey}`},signal:AbortSignal.timeout(15_000)});}
+ catch{throw stripeError(503,'provider_unreachable','Could not reach Stripe. Check network access and retry.');}
+ const value=await response.json().catch(()=>null) as {id?:unknown}|null;
+ if(!response.ok){if(response.status===401)throw stripeError(422,'stripe_key_rejected','Stripe rejected this API key. Check that it is active and copied correctly.');if(response.status===403)throw stripeError(422,'stripe_key_permission_denied','This Stripe key needs permission to read the account.');throw stripeError(502,'stripe_account_check_failed','Stripe could not verify this account right now.');}
+ // /v1/account does not consistently include a `livemode` property. The API key
+ // prefix above is the mode signal; this request verifies that Stripe accepts it.
+ if(typeof value?.id!=='string')throw stripeError(502,'stripe_account_check_failed','Stripe did not return a valid account.');
+ return {account_id:value.id,mode};
+}
+
 /** Creates a hosted Checkout Session on the exact merchant account represented by the supplied secret key. */
 export async function createStripeCheckout(secretKey:string,input:StripeCheckoutInput,fetcher:typeof fetch=fetch):Promise<StripeCheckout>{
  if(!/^(?:sk|rk)_(test|live)_[A-Za-z0-9]+$/.test(secretKey))throw stripeError(503,'provider_not_configured','A mode-matched Stripe API key is not configured.');

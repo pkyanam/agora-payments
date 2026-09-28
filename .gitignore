@@ -36,7 +36,7 @@ pnpm-debug.log*
 next-env.d.ts
 
 # Private local sandbox records and credentials
-.data/
+.data
 .env*
 !.env.example
 .secrets/

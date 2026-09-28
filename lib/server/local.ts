@@ -23,6 +23,9 @@ export const setMerchantCookie=service.setMerchantCookie;
 export const clearMerchantCookie=service.clearMerchantCookie;
 export const mutate=service.mutate;
 export const createProduct=service.createProduct;
+export const archiveProduct=service.archiveProduct;
+export const archivePayment=service.archivePayment;
+export const paymentActivity=service.paymentActivity;
 export const createPayment=service.createPayment;
 export const createRefund=service.createRefund;
 export const resolveApproval=service.resolveApproval;
@@ -49,3 +52,15 @@ export { ApiError, bodyOf, setSessionCookie, requireSameOrigin, responseError, r
 export { setMfaCookie } from './admin-auth';
 
 export const paymentProviderReadiness=service.paymentProviderReadiness;
+export const stripeRuntimeEnvironment=service.stripeRuntimeEnvironment;
+export const stripeConfigSummary=service.stripeConfigSummary;
+export const setStripeConfig=service.setStripeConfig;
+export const stripeSecret=service.stripeSecret;
+export const createWebhookEndpoint=service.createWebhookEndpoint;
+export const listWebhookEndpoints=service.listWebhookEndpoints;
+export const updateWebhookEndpoint=service.updateWebhookEndpoint;
+export const archiveWebhookEndpoint=service.archiveWebhookEndpoint;
+export const rotateWebhookSecret=service.rotateWebhookSecret;
+export const listWebhookDeliveries=service.listWebhookDeliveries;
+export const webhookDeliveryDetail=service.webhookDeliveryDetail;
+export const replayWebhookDelivery=service.replayWebhookDelivery;

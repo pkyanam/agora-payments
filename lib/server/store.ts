@@ -9,4 +9,5 @@ export interface LedgerStore {
   now():string;
   event(type:string,actor:string,object_id:string,data?:object,tenantId?:string):string;
   journal(reference:string,amount:number,account:string,tenantId?:string):void;
+  scheduleWebhookAlarm?():void;
 }

@@ -1,5 +1,7 @@
 "use client"
 import { useEffect, useState, useCallback, useRef, type FormEvent } from "react"
+import QRCode from "qrcode"
+import Image from "next/image"
 import Link from "next/link"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
@@ -13,7 +15,7 @@ import {
   Copy01Icon,
   Search01Icon,
   ArrowRight01Icon,
-  Tick02Icon,
+  Settings05Icon,
 } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
 import {
@@ -66,6 +68,9 @@ import { Grid } from "@/components/dither-kit/grid"
 import { XAxis } from "@/components/dither-kit/x-axis"
 import { YAxis } from "@/components/dither-kit/y-axis"
 import { Tooltip as ChartTooltip } from "@/components/dither-kit/tooltip"
+import { StripeSetup } from "@/components/stripe-setup"
+import { InstallationPanel } from "@/components/installation-panel"
+import { OutgoingWebhooks } from "@/components/outgoing-webhooks"
 const money = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
     n / 100
@@ -76,12 +81,29 @@ const date = (s: string) =>
     day: "numeric",
     timeZone: "UTC",
   })
+const activityLabel = (value: string, bucketSeconds?: number | null) => {
+  const parsed = new Date(value)
+  if (bucketSeconds !== null && bucketSeconds !== undefined && bucketSeconds <= 3600) {
+    return parsed.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "UTC" })
+  }
+  if (bucketSeconds === null) return parsed.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" })
+  return parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })
+}
+const activityAccessibleLabel = (value: string, bucketSeconds?: number | null) => {
+  const parsed = new Date(value)
+  return bucketSeconds !== null && bucketSeconds !== undefined && bucketSeconds <= 3600
+    ? parsed.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" })
+    : bucketSeconds === null
+      ? parsed.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" })
+      : parsed.toLocaleDateString("en-US", { dateStyle: "long", timeZone: "UTC" })
+}
 const views = [
   "Overview",
   "Payments",
   "Catalog",
   "Agents",
   "Developers",
+  "Settings",
 ] as const
 type View = (typeof views)[number]
 type CreatedPayment = Payment & {
@@ -101,6 +123,8 @@ type ApiResponse = {
   [key: string]: unknown
 }
 type ApiDiagnostic = { status: number; requestId?: string; storage?: string }
+type ActivityRange = "1h" | "24h" | "7d" | "30d" | "90d" | "1y" | "all" | "custom"
+type OverviewActivity = Snapshot["activity"] & { range?: ActivityRange; bucket_seconds?: number | null }
 const parseApiResponse = (raw: string): ApiResponse => {
   const value: unknown = JSON.parse(raw)
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -111,9 +135,9 @@ const isProviderMode = (value: unknown): value is "test" | "live" =>
   value === "test" || value === "live"
 const isProviderStatus = (value: unknown): value is MerchantProvider["status"] =>
   value === "not_connected" || value === "charges_pending" || value === "connected" || value === "disconnected"
-const icons = [Home03Icon, CreditCardIcon, PackageIcon, AiBrain01Icon, CodeIcon]
+const icons = [Home03Icon, CreditCardIcon, PackageIcon, AiBrain01Icon, CodeIcon, Settings05Icon]
 const keyModeLabel = (mode?: "sandbox" | "test" | "live") =>
-  mode === "test" ? "Stripe test" : mode === "live" ? "Stripe live" : mode === "sandbox" ? "Sandbox" : "Mode unavailable"
+  mode === "test" ? "Agora test mode" : mode === "live" ? "Agora live mode" : mode === "sandbox" ? "Agora sandbox" : "Mode unavailable"
 const workspaceKeyModeLabel = (data: Snapshot | null) =>
   data?.provider_status === "setup_required"
     ? keyModeLabel(data.provider_mode)
@@ -138,6 +162,11 @@ export default function Console() {
   const pendingWrites = useRef(new Map<string, string>())
   const [view, setView] = useState<View>("Overview")
   const [data, setData] = useState<Snapshot | null>(null)
+  const [activityRange, setActivityRange] = useState<ActivityRange>("30d")
+  const [customStart, setCustomStart] = useState(() => new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10))
+  const [customEnd, setCustomEnd] = useState(() => new Date().toISOString().slice(0, 10))
+  const [activityData, setActivityData] = useState<OverviewActivity | null>(null)
+  const [activityError, setActivityError] = useState("")
   const [error, setError] = useState("")
   const [authState, setAuthState] = useState<
     "checking" | "signed-out" | "enroll" | "verify" | "recovery" | "pending" | "signed-in"
@@ -151,6 +180,7 @@ export default function Console() {
   const [authBusy, setAuthBusy] = useState(false)
   const [mfaSecret, setMfaSecret] = useState("")
   const [mfaUri, setMfaUri] = useState("")
+  const [mfaQrData, setMfaQrData] = useState<{ uri: string; data: string } | null>(null)
   const [mfaCode, setMfaCode] = useState("")
   const [useRecoveryCode, setUseRecoveryCode] = useState(false)
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([])
@@ -160,6 +190,7 @@ export default function Console() {
   )
   const [selected, setSelected] = useState<Payment | null>(null)
   const [filter, setFilter] = useState("all")
+  const [showArchived, setShowArchived] = useState(false)
   const [query, setQuery] = useState("")
   const [busy, setBusy] = useState(false)
   const [product, setProduct] = useState("")
@@ -188,6 +219,8 @@ export default function Console() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [sidebarReady, setSidebarReady] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const mobileNavTrigger = useRef<HTMLButtonElement | null>(null)
+  const mobileNavWasOpen = useRef(false)
   const [providerBusyTenant, setProviderBusyTenant] = useState("")
   function setApiAuthError(response: Response, body: ApiResponse, fallback: string) {
     setAuthError(body.error?.message || fallback)
@@ -213,9 +246,9 @@ export default function Console() {
       </div>
     )
   }
-  const load = useCallback(async () => {
+  const load = useCallback(async (includeArchived = showArchived) => {
     try {
-      const r = await fetch("/api/console", { cache: "no-store" })
+      const r = await fetch(`/api/console${includeArchived ? "?include_archived=1" : ""}`, { cache: "no-store" })
       const raw = await r.text()
       let b: ApiResponse
       try {
@@ -242,7 +275,7 @@ export default function Console() {
             : "Unable to load workspace."
       )
     }
-  }, [])
+  }, [showArchived])
   const checkSession = useCallback(async () => {
     if (recoveryPending.current) return
     try {
@@ -287,6 +320,16 @@ export default function Console() {
     }
   }, [load])
   useEffect(() => {
+    let active = true
+    if (mfaUri) {
+      // Render the provisioning URI locally. It is never sent to a QR service.
+      void QRCode.toDataURL(mfaUri, { width: 220, margin: 2, errorCorrectionLevel: "M" })
+        .then((dataUrl) => { if (active) setMfaQrData({ uri: mfaUri, data: dataUrl }) })
+        .catch(() => { if (active) setMfaQrData(null) })
+    }
+    return () => { active = false }
+  }, [mfaUri])
+  useEffect(() => {
     setSidebarCollapsed(
       window.localStorage.getItem("agora.sidebar.collapsed") === "true"
     )
@@ -300,6 +343,12 @@ export default function Console() {
       )
     }
   }, [sidebarCollapsed, sidebarReady])
+  useEffect(() => {
+    if (mobileNavWasOpen.current && !mobileNavOpen) {
+      window.requestAnimationFrame(() => mobileNavTrigger.current?.focus())
+    }
+    mobileNavWasOpen.current = mobileNavOpen
+  }, [mobileNavOpen])
   useEffect(() => {
     checkSession()
     const onFocus = () => checkSession()
@@ -315,6 +364,25 @@ export default function Console() {
       window.removeEventListener("popstate", sync)
     }
   }, [checkSession])
+  useEffect(() => {
+    if (authState !== "signed-in" || view !== "Overview") return
+    if (activityRange === "custom" && (!customStart || !customEnd)) return
+    const controller = new AbortController()
+    const params = new URLSearchParams({ range: activityRange })
+    if (activityRange === "custom") { params.set("from", customStart); params.set("to", customEnd) }
+    void (async () => {
+      try {
+        const response = await fetch(`/api/console/activity?${params}`, { cache: "no-store", signal: controller.signal })
+        const body = await response.json() as OverviewActivity & ApiResponse
+        if (!response.ok) throw new Error(body.error?.message || "Activity could not be loaded.")
+        setActivityData(body)
+        setActivityError("")
+      } catch (reason) {
+        if (!controller.signal.aborted) setActivityError(reason instanceof Error ? reason.message : "Activity could not be loaded.")
+      }
+    })()
+    return () => controller.abort()
+  }, [authState, view, activityRange, customStart, customEnd])
   const navigate = (v: View) => {
     setView(v)
     setQuery("")
@@ -395,6 +463,8 @@ export default function Console() {
           ? body.recovery_codes.filter((code): code is string => typeof code === "string")
           : []
         if (!codes.length) throw new Error("Recovery codes were not returned. Contact support.")
+        setMfaSecret("")
+        setMfaUri("")
         recoveryPending.current = true
         setRecoveryCodes(codes)
         setAuthState("recovery")
@@ -469,6 +539,29 @@ export default function Console() {
     pendingWrites.current.delete(fingerprint)
     await load()
     return b as unknown as T
+  }
+  async function setArchivedRecord(kind: "products" | "payments", id: string, archived: boolean) {
+    if (archived && !window.confirm("Archive this record? It will be hidden from the default list. Its ledger, refunds, and event history remain unchanged.")) return
+    setBusy(true)
+    try {
+      const response = await fetch(`/api/console/${kind}/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archived }),
+      })
+      const body = await response.json() as ApiResponse
+      if (!response.ok) throw new Error(body.error?.message || "The record could not be updated.")
+      toast.success(archived ? "Record archived. Financial history is unchanged." : "Record restored.")
+      await load(showArchived)
+    } catch (reason) {
+      toast.error(reason instanceof Error ? reason.message : "The record could not be updated.")
+    } finally { setBusy(false) }
+  }
+  function toggleArchivedView() {
+    const next = !showArchived
+    setShowArchived(next)
+    setFilter(next ? "archived" : "all")
+    void load(next)
   }
   async function perform(fn: () => Promise<void>) {
     setBusy(true)
@@ -617,14 +710,16 @@ export default function Console() {
     setDialog("key")
   }
   const pending = data?.approvals.filter((a) => a.status === "pending") || []
-  const activity = data?.activity
+  const activity = activityData
   const volume = activity?.gross_amount
   const refunded = activity?.refunded_amount
   const filtered =
     data?.payments.filter(
       (p) =>
-        (filter === "all" ||
-          (filter === "refunded" ? p.refunded > 0 : p.status === filter)) &&
+        (filter === "archived"
+          ? Boolean(p.archived_at)
+          : !p.archived_at && (filter === "all" ||
+            (filter === "refunded" ? p.refunded > 0 : p.status === filter))) &&
         `${p.customer} ${p.product_name} ${p.id}`
           .toLowerCase()
           .includes(query.toLowerCase())
@@ -649,10 +744,10 @@ export default function Console() {
       : "Payment creation is disabled because provider readiness has not been confirmed. Ask the workspace owner to check setup."
   let cumulative = 0
   const volumeSeries = (activity?.daily || []).map((day) => {
-    const dateUtc = new Date(`${day.date}T00:00:00.000Z`)
+    const dateUtc = new Date(day.date)
     return {
       day: dateUtc,
-      label: date(day.date),
+      label: activityLabel(day.date, activity?.bucket_seconds),
       amount: day.gross_amount,
       successfulPayments: day.successful_payments,
       refunded: day.refunded_amount,
@@ -737,7 +832,7 @@ export default function Console() {
   const code = {
     typescript: `const response = await fetch("${typeof location !== "undefined" ? location.origin : "https://agora.example.com"}/api/v1/payments", {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGORA_API_KEY}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": "order-001",\n  },\n  body: JSON.stringify({ product_id: "${data?.products[0]?.id || "prod_studio"}" }),\n});\n\nif (!response.ok) throw new Error(await response.text());\nconst payment = await response.json();\n// Redirect the customer to the returned hosted checkout URL.\nconsole.log(payment.checkout_url);`,
     curl: `curl -X POST "$AGORA_URL/api/v1/payments" \\\n  -H "Authorization: Bearer $AGORA_API_KEY" \\\n  -H "Idempotency-Key: order-001" \\\n  -H "Content-Type: application/json" \\\n  -d '{"product_id":"${data?.products[0]?.id || "prod_studio"}"}'`,
-    cli: `export AGORA_URL="${typeof location !== "undefined" ? location.origin : "https://agora.example.com"}"\nexport AGORA_API_KEY="your-mode-bound-key"\n\nagora products list\nagora payments create \\\n  --product ${data?.products[0]?.id || "prod_studio"} \\\n  --idempotency-key order-001\n\nagora payments reconcile --id pay_…\n\n# Install (Node.js 20.9+):\ncurl -fsSL https://agora-payments.vercel.app/install.sh | bash`,
+    cli: `# Run once after creating a scoped API key. The key is entered at a hidden prompt.\nagora auth login --url ${typeof location !== "undefined" ? location.origin : "https://agora.example.com"}\n\nagora products list\nagora payments create \\\n  --product ${data?.products[0]?.id || "prod_studio"} \\\n  --idempotency-key order-001\n\nagora payments reconcile --id pay_…\n\n# Install (Node.js 20.9+):\ncurl -fsSL https://agora-payments.vercel.app/install.sh | bash`,
   }
   const renderSidebar = (mobile = false) => (
     <aside
@@ -759,7 +854,7 @@ export default function Console() {
       <div className="workspace">
         <span className="avatar" aria-hidden="true">A</span>
         <div className="workspace-copy">
-          {authRole === "merchant" ? "Merchant" : "Belweave"}<small>Workspace</small>
+          {authRole === "merchant" ? "Merchant" : data?.deployment_type === "community" ? "Agora" : "Belweave"}<small>Workspace</small>
         </div>
       </div>
       <nav aria-label="Main navigation">
@@ -846,8 +941,11 @@ export default function Console() {
           <h1 id="auth-title">Set up an authenticator</h1>
           {mfaSecret ? (
             <>
-              <p>Add this account to an authenticator app, then enter its current six-digit code.</p>
+              <p>Scan this QR code with your authenticator app, then enter its current six-digit code. The QR is generated in this browser and is not sent to another service.</p>
+              {mfaQrData?.uri === mfaUri ? <div className="mfa-qr-wrap"><Image className="mfa-qr" src={mfaQrData.data} alt="Authenticator setup QR code" width={220} height={220} unoptimized /><span>Scan with your authenticator app</span></div> : <p className="form-note" role="status">Preparing a private QR code… If it does not appear, use the setup key below.</p>}
               <div className="mfa-secret-block">
+                <details className="mfa-manual-setup">
+                  <summary>Set up manually instead</summary>
                 <Label htmlFor="mfa-secret">Setup key</Label>
                 <code id="mfa-secret" className="mfa-secret">{mfaSecret}</code>
                 <Button type="button" variant="secondary" onClick={() => void copy(mfaSecret)}>
@@ -858,6 +956,7 @@ export default function Console() {
                     Copy authenticator setup URI <HugeiconsIcon icon={Copy01Icon} aria-hidden="true" />
                   </Button>
                 )}
+                </details>
               </div>
               <form className="form-stack" onSubmit={submitMfa}>
                 <div className="field">
@@ -992,6 +1091,7 @@ export default function Console() {
                   <button
                     type="button"
                     className="sidebar-toggle mobile-sidebar-toggle"
+                    ref={mobileNavTrigger}
                     aria-label="Open navigation"
                     aria-controls="mobile-navigation"
                     aria-expanded={mobileNavOpen}
@@ -1022,7 +1122,7 @@ export default function Console() {
             <section className="error-state" role="alert" aria-live="assertive">
               <h1>Let’s reconnect.</h1>
               <p>{error}</p>
-              <Button onClick={load}>Try again</Button>
+              <Button onClick={() => void load()}>Try again</Button>
             </section>
           ) : !data ? (
             <div className="loading-state">
@@ -1033,14 +1133,21 @@ export default function Console() {
           ) : (
             <>
               {data.provider_status === "setup_required" && (
-                <section className="merchant-provider-panel provider-setup-alert" role="status" aria-labelledby="provider-setup-title">
+                <section className="merchant-provider-panel provider-setup-alert" aria-labelledby="provider-setup-title">
                   <div>
                     <h2 id="provider-setup-title">Checkout setup required</h2>
                     <p>
-                      Payment creation is disabled until the workspace owner configures the required Stripe credentials and verifies the webhook. This deployment has no simulator fallback.
+                      Payments are paused until this deployment connects Stripe and verifies a signed webhook. Configure Stripe to continue.
                     </p>
                   </div>
+                  {authRole === "owner" && <Button onClick={() => navigate("Settings")}>Configure Stripe</Button>}
                 </section>
+              )}
+              {view === "Settings" && (
+                <>
+                  <section className="page-heading"><div><h1>Settings</h1><p>Connect the Stripe account for this Agora deployment.</p></div></section>
+                  {authRole === "owner" ? <><StripeSetup onChange={() => void load()} /><InstallationPanel version={data.current_version} target={data.deployment_target} /></> : <p role="status">Only the workspace owner can change workspace settings.</p>}
+                </>
               )}
               {view === "Overview" && (
                 <>
@@ -1053,10 +1160,21 @@ export default function Console() {
                       Create payment
                     </Button>
                   </section>
+                  <div className="activity-range-controls" role="group" aria-label="Payment activity time range">
+                    {([["1h", "1 hour"], ["24h", "24 hours"], ["7d", "7 days"], ["30d", "30 days"], ["90d", "90 days"], ["1y", "1 year"], ["all", "All time"], ["custom", "Custom"]] as const).map(([value, label]) => (
+                      <Button key={value} type="button" size="sm" variant={activityRange === value ? "secondary" : "ghost"} aria-pressed={activityRange === value} onClick={() => setActivityRange(value)}>{label}</Button>
+                    ))}
+                    {activityRange === "custom" && <span className="activity-custom-range">
+                      <Label htmlFor="activity-from">From</Label><Input id="activity-from" type="date" value={customStart} onChange={(event) => setCustomStart(event.target.value)} />
+                      <Label htmlFor="activity-to">To</Label><Input id="activity-to" type="date" value={customEnd} onChange={(event) => setCustomEnd(event.target.value)} />
+                    </span>}
+                  </div>
+                  <p className="subtle activity-timezone-note">All time boundaries use UTC. Archived transactions stay in financial totals.</p>
+                  {activityError && <p className="form-note" role="status">{activityError}</p>}
                   <section className="overview-volume">
                     <div>
                       <div className="section-label">
-                        Gross processed <span>Successful payments created · 28 UTC days · before provider fees</span>
+                        Gross processed <span>Successful payments created · {activityRange === "custom" ? `${customStart} to ${customEnd}` : activityRange === "all" ? "all time" : `last ${activityRange}`} · UTC · before provider fees</span>
                       </div>
                       <div className="hero-number">
                         {volume === undefined ? (
@@ -1080,7 +1198,7 @@ export default function Console() {
                           config={{
                             total: { label: "Gross processed amount", color: "grey" },
                           }}
-                          ariaLabel="Cumulative gross amount from successful payments created in the last 28 UTC dates, before provider fees. Exact daily counts, amounts, and refunds attributed to those payments are available in the accessible table after the chart."
+                          ariaLabel={`Cumulative gross amount from successful payments created for ${activityRange} in UTC, before provider fees. Exact bucket counts, amounts, and refunds attributed to those payments are available in the accessible table after the chart.`}
                           animate={false}
                           bloom="off"
                           className="dither-area-chart"
@@ -1106,7 +1224,7 @@ export default function Console() {
                       <div className="accessible-chart-data">
                       <table>
                         <caption>
-                          Daily successful payments created in the last 28 UTC dates. Refunds are attributed to the date the payment was created.
+                          Successful payments created for the selected UTC time range. Refunds are attributed to the date the payment was created.
                         </caption>
                         <thead>
                           <tr>
@@ -1121,10 +1239,7 @@ export default function Console() {
                           {volumeSeries.map((day) => (
                             <tr key={day.day.toISOString()}>
                               <th scope="row">
-                                {day.day.toLocaleDateString("en-US", {
-                                  dateStyle: "long",
-                                  timeZone: "UTC",
-                                })}
+                                {activityAccessibleLabel(day.day.toISOString(), activity?.bucket_seconds)}
                               </th>
                               <td>{day.successfulPayments}</td>
                               <td>{money(day.amount)}</td>
@@ -1183,10 +1298,13 @@ export default function Console() {
                     <div>
                       <h1>Payments</h1>
                     </div>
-                    <Button onClick={() => openPayment()}>
-                      <HugeiconsIcon icon={PlusSignIcon} />
-                      Create payment
-                    </Button>
+                    <div className="button-row">
+                      <Button variant="secondary" onClick={toggleArchivedView}>{showArchived ? "Hide archived" : "Show archived"}</Button>
+                      <Button onClick={() => openPayment()}>
+                        <HugeiconsIcon icon={PlusSignIcon} />
+                        Create payment
+                      </Button>
+                    </div>
                   </section>
                   <div className="list-toolbar">
                     <Tabs value={filter} onValueChange={setFilter}>
@@ -1197,6 +1315,7 @@ export default function Console() {
                           "pending",
                           "refunded",
                           "failed",
+                          ...(showArchived ? ["archived"] : []),
                         ].map((t) => (
                           <TabsTrigger key={t} value={t}>
                             {t[0].toUpperCase() + t.slice(1)}
@@ -1233,16 +1352,20 @@ export default function Console() {
                     <div>
                       <h1>Catalog</h1>
                     </div>
-                    <Button onClick={() => setDialog("product")}>
-                      <HugeiconsIcon icon={PlusSignIcon} />
-                      New product
-                    </Button>
+                    <div className="button-row">
+                      <Button variant="secondary" onClick={toggleArchivedView}>{showArchived ? "Hide archived" : "Show archived"}</Button>
+                      <Button onClick={() => setDialog("product")}>
+                        <HugeiconsIcon icon={PlusSignIcon} />
+                        New product
+                      </Button>
+                    </div>
                   </section>
                   <div className="catalog-grid">
-                    {data.products.map((p, i) => (
-                      <article key={p.id} className="product-item">
+                    {data.products.map((p) => (
+                      <article key={p.id} className={`product-item${p.archived_at ? " product-item-archived" : ""}`}>
                         <code className="product-id">{p.id}</code>
                         <h2>{p.name}</h2>
+                        {p.archived_at && <span className="archived-label">Archived</span>}
                         <p>{p.description || "No description"}</p>
                         <div className="product-price">
                           {money(p.amount)}
@@ -1251,6 +1374,7 @@ export default function Console() {
                         <div className="product-actions">
                           <Button
                             variant="secondary"
+                            disabled={Boolean(p.archived_at)}
                             onClick={() => openPayment(p.id)}
                           >
                             Create checkout{" "}
@@ -1271,6 +1395,9 @@ export default function Console() {
                             </TooltipTrigger>
                             <TooltipContent>Copy product ID</TooltipContent>
                           </Tooltip>
+                          <Button type="button" variant="ghost" disabled={busy} onClick={() => void setArchivedRecord("products", p.id, !p.archived_at)}>
+                            {p.archived_at ? "Restore" : "Archive"}
+                          </Button>
                         </div>
                       </article>
                     ))}
@@ -1286,7 +1413,7 @@ export default function Console() {
                   <section className="page-heading">
                     <div>
                       <h1>{authRole === "merchant" ? "Access" : "Agents"}</h1>
-                      <p>{authRole === "merchant" ? "Provider connection, API keys, and refund approvals." : "Keys, permissions, and approvals."}</p>
+                      <p>{authRole === "merchant" ? "Provider connection, API keys, and refund approvals." : data.deployment_type === "community" ? "Scoped API keys for your applications and agents." : "Keys, permissions, and approvals."}</p>
                     </div>
                     <Button onClick={() => openKey()}>
                       <HugeiconsIcon icon={PlusSignIcon} />
@@ -1382,7 +1509,7 @@ export default function Console() {
                       ))}
                     </section>
                   )}
-                  {data.registrations.length > 0 && (
+                  {data.deployment_type !== "community" && data.registrations.length > 0 && (
                     <section className="merchant-registrations" aria-labelledby="merchant-registrations-title">
                       <div className="section-heading">
                         <h2 id="merchant-registrations-title">Merchant access</h2>
@@ -1585,6 +1712,7 @@ export default function Console() {
                       <small>Install the separate <a href="https://github.com/pkyanam/agora-cli" target="_blank" rel="noreferrer">Agora CLI repository</a>.</small>
                     </div>
                   </div>
+                  {authRole === "owner" ? <OutgoingWebhooks /> : <p role="status" className="form-note">Outgoing webhook endpoints can be managed by the workspace owner.</p>}
                   <section className="keys-section">
                     <div className="section-heading">
                       <h2>API keys</h2>
@@ -1651,7 +1779,7 @@ export default function Console() {
                   <section className="events-section">
                     <div className="section-heading">
                       <h2>Event log</h2>
-                      <Button variant="ghost" onClick={load}>
+                      <Button variant="ghost" onClick={() => void load()}>
                         Refresh
                       </Button>
                     </div>
@@ -1750,6 +1878,7 @@ export default function Console() {
                   <span>{created.product_name}</span>
                   <strong>{money(created.amount)}</strong>
                   <code>{created.id}</code>
+                  {(created.checkout_url || created.checkout_token) && <a className="checkout-share-link" href={created.checkout_url || `${location.origin}/checkout/${created.checkout_token}`} target="_blank" rel="noreferrer">{created.checkout_url || `${location.origin}/checkout/${created.checkout_token}`}</a>}
                 </div>
                 <Button
                   onClick={() => {
@@ -1906,6 +2035,14 @@ export default function Console() {
                     ? `This key is bound to ${keyTenantName}. Deliver it through a secure channel, and store it on a trusted server. It will not be shown again.`
                     : "Use this on a trusted server or in your agent’s secret store. Never put it in frontend code."}
                 </p>
+                {!keyTenantId && keyKind === "developer" && (
+                  <div className="cli-link-step">
+                    <strong>Link the Agora CLI</strong>
+                    <p>Run this command, then paste the API key at the hidden prompt. Agora saves it locally with owner-only file permissions.</p>
+                    <code>agora auth login --url {typeof location !== "undefined" ? location.origin : "https://agora.example.com"}</code>
+                    <Button type="button" variant="secondary" onClick={() => copy(`agora auth login --url ${location.origin}`)}>Copy login command <HugeiconsIcon icon={Copy01Icon} /></Button>
+                  </div>
+                )}
                 <Button
                   variant="secondary"
                   onClick={() => {
@@ -2108,10 +2245,14 @@ export default function Console() {
               <div className="detail-amount">
                 {money(selectedCurrent.amount)}
               </div>
-              <span className="payment-status succeeded">
+              <span className={`payment-status ${selectedCurrent.status}`}>
                 {status(selectedCurrent)}
               </span>
               <dl>
+                <div>
+                  <dt>Created</dt>
+                  <dd>{new Date(selectedCurrent.created_at).toLocaleString()}</dd>
+                </div>
                 <div>
                   <dt>Customer</dt>
                   <dd>{selectedCurrent.customer}</dd>
@@ -2125,23 +2266,59 @@ export default function Console() {
                   <dd>{selectedCurrent.actor}</dd>
                 </div>
                 <div>
+                  <dt>Gross amount</dt>
+                  <dd>{money(selectedCurrent.amount)}</dd>
+                </div>
+                <div>
                   <dt>Refunded</dt>
                   <dd>{money(selectedCurrent.refunded)}</dd>
                 </div>
+                <div>
+                  <dt>Remaining refundable</dt>
+                  <dd>{money(Math.max(0, selectedCurrent.amount - selectedCurrent.refunded))}</dd>
+                </div>
+                <div>
+                  <dt>Payment mode</dt>
+                  <dd>{selectedCurrent.provider === "stripe"
+                    ? selectedCurrent.provider_mode
+                      ? `Stripe ${selectedCurrent.provider_mode}`
+                      : "Stripe · mode unavailable"
+                    : selectedCurrent.provider === "sandbox"
+                      ? "Sandbox"
+                      : "Provider unavailable"}</dd>
+                </div>
               </dl>
+              {selectedCurrent.provider === "stripe" && (
+                <p className="form-note" role="note">
+                  Agora has no Radar risk signal for this payment record. If Radar is enabled, review available signals in the{" "}
+                  <a href="https://dashboard.stripe.com/" target="_blank" rel="noreferrer">Stripe Dashboard</a>.
+                </p>
+              )}
+              <Button type="button" variant="secondary" disabled={busy} onClick={() => void setArchivedRecord("payments", selectedCurrent.id, !selectedCurrent.archived_at)}>
+                {selectedCurrent.archived_at ? "Restore transaction" : "Archive transaction"}
+              </Button>
               {selectedCurrent.sample === 0 &&
-                selectedCurrent.status === "pending" && (
-                  <Button
-                    onClick={() =>
-                      window.open(
-                        `/checkout/${selectedCurrent.checkout_token}`,
-                        "_blank",
-                        "noopener"
-                      )
-                    }
-                  >
-                    Open checkout <HugeiconsIcon icon={ArrowUpRight01Icon} />
-                  </Button>
+                Boolean(selectedCurrent.checkout_token) && (
+                  <div className="button-row">
+                    <Button
+                      variant="secondary"
+                      onClick={() =>
+                        window.open(
+                          `/checkout/${selectedCurrent.checkout_token}`,
+                          "_blank",
+                          "noopener"
+                        )
+                      }
+                    >
+                      Open checkout <HugeiconsIcon icon={ArrowUpRight01Icon} />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => copy(`${window.location.origin}/checkout/${selectedCurrent.checkout_token}`)}
+                    >
+                      Copy checkout link <HugeiconsIcon icon={Copy01Icon} />
+                    </Button>
+                  </div>
                 )}
               {selectedCurrent.status === "succeeded" &&
                 selectedCurrent.refunded < selectedCurrent.amount && (

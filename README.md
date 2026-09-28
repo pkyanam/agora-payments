@@ -16,6 +16,29 @@ bash install.sh
 
 The installer places `agora` in `~/.local/bin` (or `$AGORA_INSTALL_DIR`), verifies the pinned SHA-256 of the standalone client, updates only its own managed CLI, and adds one PATH block to zsh or bash login configuration. It backs up an existing shell file before editing it. Open a new login shell and run `agora --help`. The CLI source and installer live in [pkyanam/agora-cli](https://github.com/pkyanam/agora-cli).
 
+## Install Agora Community
+
+The local Community install uses one Node.js 22.16+ process and persistent SQLite storage. It is suited to a Mac or Linux server; Raspberry Pi compatibility depends on a supported 64-bit Node build and has not yet been validated across board generations. The source repository is private during prerelease, so the bootstrap requires `gh` authenticated with repository access. It fetches source into a temporary private directory and removes that checkout after installation:
+
+```bash
+curl -fsSL https://agora-payments.vercel.app/community-install.sh | bash
+```
+
+For an existing authenticated checkout, run `bash install.sh` directly. The default target is local Node + SQLite. A separate Cloudflare Worker + Durable Object API and Vercel UI can be installed with `bash install.sh --target cloudflare`; Wrangler and Vercel CLIs must already be installed and authenticated (`npx wrangler login`, `vercel login`). This creates a distinct Vercel project and does not replace the experimental hosted deployment. Use `--help` for interactive and noninteractive configuration options. Cloud updates use the same state directory and `--update`; Cloudflare/Vercel credentials remain in their local CLI auth stores.
+
+The installer asks for an owner email, creates private configuration and bootstrap credentials, installs dependencies, and builds the app. It never deletes files or resets the database. Set the install directory and run without prompts with:
+
+```bash
+bash install.sh --dir "$HOME/.local/share/agora" --url http://localhost:3000 \
+  --owner-email owner@example.com --non-interactive
+```
+
+SQLite lives at `<install-directory>/state/data/agora.sqlite`; configuration is in `state/.env.local`, and the generated first-login password is in `state/community-owner-credentials.txt`. Releases live under `releases/` and `current` points to the active one. Keep state files private and change the bootstrap password after signing in. Community defaults to Stripe test mode. Add test credentials, configure a webhook endpoint, and verify a signed test event in the workspace's Stripe setup before issuing API keys. Community production deployments have no simulator fallback. Live mode remains an explicit operator choice after test verification.
+
+Start the app with `<install-directory>/start.sh` and open the configured origin. For public access, put the app behind HTTPS and configure `AGORA_PUBLIC_ORIGIN` to that public origin. The CLI's `agora server update --dir <install-directory>` fetches the pinned private Git repository, refuses modified release files, builds a separate release, saves a SQLite backup, and switches releases. If started with `start.sh`, it stops, restarts, and health-checks the service; a failed restart rolls back to the previous release and database backup. Back up SQLite before upgrades. Run the app as an unprivileged service account and keep it behind HTTPS; the default listener binds only to loopback.
+
+The current Vercel deployment remains experimental. Vercel's ephemeral filesystem is not a supported SQLite data store. The community cloud profile stores API state in a Cloudflare SQLite Durable Object and pairs it with a separate Vercel UI project. Webhook endpoint delivery is at-least-once; webhook target hostnames are not DNS-resolved to detect private-address rebinding, so operators should only configure trusted HTTPS endpoints.
+
 ## What Agora does today
 
 Agora provides a hosted Checkout, a versioned REST API, and a standalone CLI for products, payments, events, refunds, and hosted-checkout reconciliation. The canonical production deployment is connected to the clean owner environment and currently reports **Setup required**. Payment creation is disabled until the required Stripe credentials and signed webhook are configured and verified. There is no simulator fallback on production. The isolated Stripe test QA preview is separate; its data and test payments are not part of the canonical workspace. Live acceptance remains blocked.
@@ -67,4 +90,4 @@ bun run typecheck
 bun test
 ```
 
-The web app runs on Next.js 16; the hosted API runs on a Cloudflare Worker and SQLite Durable Object. The canonical deployment is not currently enabled for live payment creation. The separate QA store uses Stripe test credentials and does not establish live readiness.
+The web app runs on Next.js 16; local Community stores data in SQLite through Node's built-in SQLite driver, and the hosted API runs on a Cloudflare Worker and SQLite Durable Object. The canonical deployment is not currently enabled for live payment creation. The separate QA store uses Stripe test credentials and does not establish live readiness.
