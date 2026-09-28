@@ -1,9 +1,9 @@
 # Install the Agora CLI
 
-Install the standalone command with Node.js 20.9 or newer:
+Install the standalone command with Node.js 20.9 or newer. The installer and CLI are served from the private GitHub repository through your authenticated GitHub CLI session:
 
 ```bash
-curl -fsSL https://agora-payments.vercel.app/install.sh | bash
+(set -o pipefail; gh api repos/pkyanam/agora-cli/contents/install.sh -H 'Accept: application/vnd.github.raw+json' | bash)
 ```
 
 For source-based development installs, use the CLI repository directly:
@@ -21,7 +21,7 @@ The installer places `agora` in `~/.local/bin` (or `$AGORA_INSTALL_DIR`), verifi
 The local Community install uses one Node.js 22.16+ process and persistent SQLite storage. It is suited to a Mac or Linux server; Raspberry Pi compatibility depends on a supported 64-bit Node build and has not yet been validated across board generations. The source repository is private during prerelease, so the bootstrap requires `gh` authenticated with repository access. It fetches source into a temporary private directory and removes that checkout after installation:
 
 ```bash
-curl -fsSL https://agora-payments.vercel.app/community-install.sh | bash
+(set -o pipefail; gh api repos/pkyanam/agora-payments/contents/community-install.sh -H 'Accept: application/vnd.github.raw+json' | bash)
 ```
 
 For an existing authenticated checkout, run `bash install.sh` directly. The default target is local Node + SQLite. A separate Cloudflare Worker + Durable Object API and Vercel UI can be installed with `bash install.sh --target cloudflare`; Wrangler and Vercel CLIs must already be installed and authenticated (`npx wrangler login`, `vercel login`). This creates a distinct Vercel project and does not replace the experimental hosted deployment. Use `--help` for interactive and noninteractive configuration options. Cloud updates use the same state directory and `--update`; Cloudflare/Vercel credentials remain in their local CLI auth stores.
@@ -37,7 +37,7 @@ SQLite lives at `<install-directory>/state/data/agora.sqlite`; configuration is 
 
 Start the app with `<install-directory>/start.sh` and open the configured origin. For public access, put the app behind HTTPS and configure `AGORA_PUBLIC_ORIGIN` to that public origin. The CLI's `agora server update --dir <install-directory>` fetches the pinned private Git repository, refuses modified release files, builds a separate release, saves a SQLite backup, and switches releases. If started with `start.sh`, it stops, restarts, and health-checks the service; a failed restart rolls back to the previous release and database backup. Back up SQLite before upgrades. Run the app as an unprivileged service account and keep it behind HTTPS; the default listener binds only to loopback.
 
-The current Vercel deployment remains experimental. Vercel's ephemeral filesystem is not a supported SQLite data store. The community cloud profile stores API state in a Cloudflare SQLite Durable Object and pairs it with a separate Vercel UI project. Webhook endpoint delivery is at-least-once; webhook target hostnames are not DNS-resolved to detect private-address rebinding, so operators should only configure trusted HTTPS endpoints.
+The current hosted deployment remains experimental. Installer distribution uses GitHub; the hosted app frontend can still be deployed to Vercel, and Vercel's ephemeral filesystem is not a supported SQLite data store. The community cloud profile stores API state in a Cloudflare SQLite Durable Object and pairs it with a separate Vercel UI project. Webhook endpoint delivery is at-least-once; webhook target hostnames are not DNS-resolved to detect private-address rebinding, so operators should only configure trusted HTTPS endpoints.
 
 ## What Agora does today
 
