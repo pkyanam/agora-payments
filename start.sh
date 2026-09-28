@@ -47,4 +47,12 @@ START_TIME="$(ps -p "$$" -o lstart= | sed 's/^[[:space:]]*//')"
 WORKDIR="$(pwd -P)"
 node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({pid:Number(process.argv[2]),start_time:process.argv[3],workdir:process.argv[4],uid:Number(process.argv[5])})+"\n",{mode:0o600})' "$PID_FILE" "$$" "$START_TIME" "$WORKDIR" "$(id -u)"
 trap 'rm -f "$PID_FILE"' EXIT INT TERM
+# Fail before Next.js with a direct diagnosis. Never stop an unknown listener:
+# public origins may be pinned in reverse proxies and webhook configuration.
+if ! node -e 'const net=require("node:net"),s=net.createServer();s.once("error",()=>process.exit(1));s.listen({host:process.argv[1],port:Number(process.argv[2]),exclusive:true},()=>s.close(()=>process.exit(0)))' "$HOST" "$PORT" >/dev/null 2>&1; then
+  rm -f "$PID_FILE"
+  trap - EXIT INT TERM
+  printf 'Cannot start Agora: %s:%s is already in use. Inspect the listener with:\n  lsof -nP -iTCP:%s -sTCP:LISTEN\nStop or reconfigure that service, then run this start script again. Agora did not stop it.\n' "$HOST" "$PORT" "$PORT" >&2
+  exit 1
+fi
 exec node "$INSTALL_DIR/current/node_modules/next/dist/bin/next" start --hostname "$HOST" --port "$PORT"

@@ -14,6 +14,7 @@ TARGET=local
 TARGET_SET=0
 APP_DIR="${AGORA_INSTALL_DIR:-${HOME:?HOME is required}/.local/share/agora}"
 ORIGIN=http://localhost:3000
+ORIGIN_SET=0
 OWNER_EMAIL=
 PORT=3000
 PORT_SET=0
@@ -44,7 +45,7 @@ while (($#)); do
   case "$1" in
     --target) TARGET="${2:?Missing value for --target}"; TARGET_SET=1; shift 2 ;;
     --dir) APP_DIR="${2:?Missing value for --dir}"; shift 2 ;;
-    --url) ORIGIN="${2:?Missing value for --url}"; shift 2 ;;
+    --url) ORIGIN="${2:?Missing value for --url}"; ORIGIN_SET=1; shift 2 ;;
     --owner-email) OWNER_EMAIL="${2:?Missing value for --owner-email}"; shift 2 ;;
     --port) PORT="${2:?Missing value for --port}"; PORT_SET=1; shift 2 ;;
     --host) HOST="${2:?Missing value for --host}"; shift 2 ;;
@@ -77,6 +78,7 @@ if(u.username||u.password||u.pathname!=='/'||u.search||u.hash)throw new Error('P
 console.log(u.origin);
 NODE
 )"
+if ((PORT_SET && ORIGIN_SET == 0)); then ORIGIN="http://localhost:$PORT"; fi
 if [[ "$ORIGIN" == http://localhost:* || "$ORIGIN" == http://127.0.0.1:* || "$ORIGIN" == http://\[::1\]:* ]]; then
   ORIGIN_PORT="${ORIGIN##*:}"
   if ((PORT_SET)); then [[ "$PORT" == "$ORIGIN_PORT" ]] || { printf 'Loopback URL port %s must match --port %s.\n' "$ORIGIN_PORT" "$PORT" >&2; exit 2; }
@@ -104,6 +106,23 @@ if [[ -f "$APP_DIR/install.json" ]]; then
   if ((UPDATE)); then exec bash "$APP_DIR/update.sh" --dir "$APP_DIR"; fi
   node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(`Agora ${m.current_version} is already installed at ${m.install_dir}. Use bash install.sh --dir "${m.install_dir}" --update to update.`)' "$APP_DIR/install.json"
   exit 0
+fi
+# On a fresh local install, use the next available loopback port when the
+# untouched default is busy. Explicit port/URL choices are never changed.
+AUTO_PORT=0
+if ((PORT_SET == 0 && ORIGIN_SET == 0)); then AUTO_PORT=1; fi
+port_available() {
+  node -e 'const net=require("node:net"),s=net.createServer();s.once("error",()=>process.exit(1));s.listen({host:process.argv[1],port:Number(process.argv[2]),exclusive:true},()=>s.close(()=>process.exit(0)))' "$HOST" "$1" >/dev/null 2>&1
+}
+if ((AUTO_PORT)); then
+  while ! port_available "$PORT"; do
+    ((PORT < 65535)) || { printf '%s\n' 'No available local port was found.' >&2; exit 1; }
+    ((PORT+=1))
+  done
+  ORIGIN="http://localhost:$PORT"
+elif ! port_available "$PORT"; then
+  printf 'Port %s is already in use. Stop the service that owns it or choose a free port with --port. See: lsof -nP -iTCP:%s -sTCP:LISTEN\n' "$PORT" "$PORT" >&2
+  exit 1
 fi
 if [[ -e "$APP_DIR" && ! -d "$APP_DIR" ]]; then printf 'Refusing to replace a non-directory path: %s\n' "$APP_DIR" >&2; exit 1; fi
 if [[ -d "$APP_DIR" && -z "$(find "$APP_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then :
@@ -243,6 +262,25 @@ mv "$APP_DIR/.current.new" "$APP_DIR/current"
 cp "$STAGE/update.sh" "$APP_DIR/update.sh"
 cp "$STAGE/start.sh" "$APP_DIR/start.sh"
 chmod 700 "$APP_DIR/update.sh" "$APP_DIR/start.sh"
+
+# Catch a port acquired while dependencies/build were running. Automatic
+# installs can safely move to another loopback port and keep both config files
+# coherent; explicit choices stop with an actionable message.
+if ! port_available "$PORT"; then
+  if ((AUTO_PORT)); then
+    NEXT_PORT=$((PORT + 1))
+    while ((NEXT_PORT < 65536)) && ! port_available "$NEXT_PORT"; do ((NEXT_PORT+=1)); done
+    ((NEXT_PORT < 65536)) || { printf '%s\n' 'No available local port remains; installation files are in place, but the server was not started.' >&2; exit 1; }
+    PORT="$NEXT_PORT"; ORIGIN="http://localhost:$PORT"
+    node --input-type=module - "$APP_DIR/install.json" "$ENV_FILE" "$PORT" "$ORIGIN" <<'NODE'
+import { chmod, readFile, rename, writeFile } from 'node:fs/promises';
+const [manifest,env,port,origin]=process.argv.slice(2);const m=JSON.parse(await readFile(manifest,'utf8'));m.port=Number(port);m.public_origin=origin;const mt=`${manifest}.${process.pid}.tmp`;await writeFile(mt,`${JSON.stringify(m,null,2)}\n`,{mode:0o600,flag:'wx'});await rename(mt,manifest);await chmod(manifest,0o600);const rows=(await readFile(env,'utf8')).split(/\r?\n/).filter(x=>!/^AGORA_PUBLIC_ORIGIN=/.test(x));rows.push(`AGORA_PUBLIC_ORIGIN=${JSON.stringify(origin)}`);const et=`${env}.${process.pid}.tmp`;await writeFile(et,rows.join('\n'),{mode:0o600,flag:'wx'});await rename(et,env);await chmod(env,0o600);
+NODE
+  else
+    printf 'Port %s became occupied during installation. Stop the service that owns it, then start Agora with: %s/start.sh\n' "$PORT" "$APP_DIR" >&2
+    exit 1
+  fi
+fi
 
 cat <<RESULT
 
