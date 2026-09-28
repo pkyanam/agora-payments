@@ -73,6 +73,16 @@ command -v node >/dev/null || { echo 'Install Node.js 22 or newer.' >&2; exit 1;
 command -v npm >/dev/null || { echo 'Install npm with Node.js.' >&2; exit 1; }
 command -v npx >/dev/null || { echo 'Install npm/npx with Node.js.' >&2; exit 1; }
 [[ -f "$ROOT/workers/ledger/index.ts" && -f "$ROOT/wrangler.jsonc" ]] || { echo 'Run this from an Agora checkout containing workers/ledger and wrangler.jsonc.' >&2; exit 1; }
+if [[ ! -d "$ROOT/node_modules/zod" ]]; then
+  echo 'Installing the app dependencies needed to bundle the Worker…'
+  if command -v bun >/dev/null 2>&1; then
+    bun install --frozen-lockfile
+  else
+    # The app ships a Bun lockfile; for Node-only hosts use npm's package.json
+    # ranges without writing an npm lockfile into the source checkout.
+    npm install --no-audit --no-fund --no-package-lock
+  fi
+fi
 npx --no-install wrangler whoami >/dev/null 2>&1 || { echo 'Cloudflare Wrangler is not authenticated. Run `npx wrangler login`, then retry.' >&2; exit 1; }
 command -v vercel >/dev/null || { echo 'Install Vercel CLI to deploy the separate community UI (`npm install -g vercel`).' >&2; exit 1; }
 vercel whoami >/dev/null 2>&1 || { echo 'Vercel CLI is not authenticated. Run `vercel login`, then retry.' >&2; exit 1; }
