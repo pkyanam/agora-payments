@@ -4,9 +4,20 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agora-start-port-test.XXXXXX")"
 trap '[[ -z "${LISTENER_PID:-}" ]] || kill "$LISTENER_PID" 2>/dev/null || true; rm -rf -- "$TEST_DIR"' EXIT INT TERM
 APP="$TEST_DIR/app"
-mkdir -p "$APP/releases/0123456789ab" "$APP/state"
+mkdir -p "$APP/releases/0123456789ab" "$APP/state" "$APP/releases/0123456789ab/scripts"
 ln -s releases/0123456789ab "$APP/current"
+cat > "$APP/current/scripts/print-owner-setup-link.mjs" <<'HANDOFF'
+console.log('Owner setup is already complete.')
+HANDOFF
 printf '{"install_dir":"%s","current_version":"0123456789ab","port":0,"host":"127.0.0.1"}\n' "$APP" > "$APP/install.json"
+cat > "$APP/update.sh" <<'UPDATE'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$1" == --dir && "$2" == "$AGORA_INSTALL_DIR" ]]
+printf '%s\n' 'mock updater was invoked' > "$AGORA_INSTALL_DIR/update-called"
+printf '%s\n' 'Agora is already installed (fixture no-op).'
+UPDATE
+chmod 700 "$APP/update.sh"
 PORT="$(node -e 'const s=require("node:net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')"
 node -e 'require("node:net").createServer().listen(Number(process.argv[1]),"127.0.0.1")' "$PORT" >/dev/null 2>&1 &
 LISTENER_PID=$!
@@ -23,4 +34,6 @@ kill -0 "$LISTENER_PID"
 printf '%s\n' 'PASS: startup explains an occupied port and leaves its listener running.'
 OUTPUT="$(AGORA_INSTALL_DIR="$APP" bash "$ROOT/install.sh" --dir "$APP" --non-interactive --owner-email test@example.com)"
 [[ "$OUTPUT" == *'is already installed'* ]]
+[[ "$(cat "$APP/update-called")" == 'mock updater was invoked' ]]
+[[ "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).current_version' "$APP/install.json")" == '0123456789ab' ]]
 printf '%s\n' 'PASS: installer reruns remain idempotent when the configured port is occupied.'
