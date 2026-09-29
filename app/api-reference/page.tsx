@@ -73,6 +73,12 @@ export default function Reference() {
           explicitly configured sandbox may simulate outcomes and never
           collects card details.
         </p>
+        <p>
+          Use the returned <code>checkout_url</code> verbatim. Payment create,
+          retry, read, and list responses use the same Agora-hosted link. Never
+          build a checkout path from a payment ID or send a processor session
+          URL directly; those are not the payer link.
+        </p>
       </section>
       <section>
         <h2>Eight endpoints. One model.</h2>

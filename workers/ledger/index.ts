@@ -4,6 +4,7 @@ import { createService, requireScope, requireProviderMode, paymentProviderReadin
 import { setMfaCookie } from '../../lib/server/admin-auth';
 import { createStripeCheckout, createStripeRefund, deauthorizeStripeAccount, exchangeStripeOAuthCode, getStripeConnectedAccount, retrieveStripeCheckout } from '../../lib/server/stripe';
 import type { Payment } from '../../lib/types';
+import { publicPayment } from '../../lib/server/public-payment';
 import { testStripeApiKey } from '../../lib/server/stripe';
 import { dispatchWebhookBatch, enqueueWebhookEvent } from '../../lib/server/outgoing-webhooks';
 
@@ -473,7 +474,7 @@ export class AgoraLedgerDO extends DurableObject<Env> {
           const rows = this.store.all<Record<string, unknown>>(`SELECT rowid AS cursor_id,* FROM ${table} WHERE tenant_id=? AND rowid>?${filter} ORDER BY rowid LIMIT ?`, actor.tenant_id, cursor, ...filterArgs, limit + 1);
           const hasMore = rows.length > limit;
           const items = rows.slice(0, limit);
-          return json({ data: items.map((row) => { const { cursor_id, checkout_token, tenant_id: _tenantId, ...item } = row; return table === 'events' ? { ...item, data: JSON.parse(String(item.data)) } : item; }), next_cursor: hasMore ? items.at(-1)?.cursor_id : null }, 200, { 'X-Request-Id': requestId });
+          return json({ data: items.map((row) => { const { cursor_id, ...item } = row; if (table === 'payments') return publicPayment(item as unknown as Payment, this.env.AGORA_PUBLIC_ORIGIN || url.origin); const { checkout_token, tenant_id: _tenantId, ...visible } = item; return table === 'events' ? { ...visible, data: JSON.parse(String(visible.data)) } : visible; }), next_cursor: hasMore ? items.at(-1)?.cursor_id : null }, 200, { 'X-Request-Id': requestId });
         }
         if (method === 'POST' && table !== 'events') {
           if (table === 'products') {
@@ -520,13 +521,12 @@ export class AgoraLedgerDO extends DurableObject<Env> {
             : "SELECT * FROM payments WHERE id=? AND tenant_id=? AND provider='stripe' AND provider_mode=?", ...mode === 'sandbox' ? [paymentMatch[1], actor.tenant_id] : [paymentMatch[1], actor.tenant_id, mode])
           : this.store.one<Payment>('SELECT * FROM payments WHERE id=? AND tenant_id=?', paymentMatch[1], actor.tenant_id);
         if (!payment) throw new ApiError(404, 'not_found', 'Payment not found.');
-        const { checkout_token: _checkoutToken, tenant_id: _tenantId, ...visible } = payment;
-        return json(visible, 200, { 'X-Request-Id': requestId });
+        return json(publicPayment(payment, this.env.AGORA_PUBLIC_ORIGIN || url.origin), 200, { 'X-Request-Id': requestId });
       }
       const checkoutMatch = path.match(/^\/api\/checkout\/([^/]+)$/);
       if (checkoutMatch && method === 'GET') {
         const payment = this.store.one<Payment>('SELECT * FROM payments WHERE checkout_token=? AND sample=0', checkoutMatch[1]);
-        if (!payment) throw new ApiError(404, 'not_found', 'Checkout not found.');
+        if (!payment) throw new ApiError(404, 'not_found', 'Checkout not found. Use the exact checkout_url returned by Agora; payment IDs are not checkout links.');
         return json({ id: payment.id, product_name: payment.product_name, amount: payment.amount, status: payment.status, currency: payment.currency, provider: payment.provider || 'sandbox', provider_mode: payment.provider_mode || null }, 200, { 'X-Request-Id': requestId });
       }
       if (checkoutMatch && method === 'POST') {
@@ -561,8 +561,7 @@ export class AgoraLedgerDO extends DurableObject<Env> {
     }
     const payment = this.service.mutate(actor, route, key, body, () => this.service.createPayment(actor, body)) as WorkerPayment;
     if (provider === 'sandbox') {
-      const { checkout_token, tenant_id: _tenantId, ...visible } = payment;
-      return { ...visible, checkout_url: `/checkout/${checkout_token}`, provider: 'sandbox' };
+      return publicPayment(payment, this.env.AGORA_PUBLIC_ORIGIN);
     }
     const secretKey = (mode === 'test' || mode === 'live') ? this.service.stripeSecret(mode, 'api') : undefined;
     const prefix = mode === 'live' ? 'live' : 'test';
@@ -584,8 +583,7 @@ export class AgoraLedgerDO extends DurableObject<Env> {
       ...(connected ? { stripeAccountId: connected.account_id } : {}),
     });
     this.service.saveStripeSession(payment.id, session, mode, actor.tenant_id, connected?.account_id || null);
-        const { checkout_token: _checkoutToken, tenant_id: _tenantId, ...visible } = payment;
-    return { ...visible, checkout_url: `${configured}/checkout/start#${payment.checkout_token}`, provider: 'stripe', provider_mode: mode };
+    return publicPayment({ ...payment, provider: 'stripe', provider_mode: mode }, configured);
   }
 
   private async submitStripeRefund(tenantId: string, refundId: string) {

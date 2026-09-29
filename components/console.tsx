@@ -108,9 +108,8 @@ const views = [
   "Settings",
 ] as const
 type View = (typeof views)[number]
-type CreatedPayment = Payment & {
+type CreatedPayment = Omit<Payment, "checkout_token"> & {
   checkout_url?: string
-  checkout_token?: string
   provider?: "sandbox" | "stripe"
   provider_mode?: "test" | "live"
 }
@@ -2028,27 +2027,22 @@ export default function Console() {
                   <span>{created.product_name}</span>
                   <strong>{money(created.amount)}</strong>
                   <code>{created.id}</code>
-                  {(created.checkout_url || created.checkout_token) && <a className="checkout-share-link" href={created.checkout_url || `${location.origin}/checkout/${created.checkout_token}`} target="_blank" rel="noreferrer">{created.checkout_url || `${location.origin}/checkout/${created.checkout_token}`}</a>}
+                  {created.checkout_url && <a className="checkout-share-link" href={created.checkout_url} target="_blank" rel="noreferrer">{created.checkout_url}</a>}
                 </div>
                 <Button
                   onClick={() => {
-                    const url = created.checkout_url ||
-                      (created.checkout_token
-                        ? `/checkout/${created.checkout_token}`
-                        : null)
+                    const url = created.checkout_url
                     if (url) location.assign(url)
                   }}
-                  disabled={!created.checkout_url && !created.checkout_token}
+                  disabled={!created.checkout_url}
                 >
                   Open checkout <HugeiconsIcon icon={ArrowUpRight01Icon} />
                 </Button>
                 <Button
                   variant="secondary"
-                  disabled={!created.checkout_url && !created.checkout_token}
+                  disabled={!created.checkout_url}
                   onClick={() =>
-                    copy(
-                      created.checkout_url || `${location.origin}/checkout/${created.checkout_token}`
-                    )
+                    created.checkout_url && copy(created.checkout_url)
                   }
                 >
                   Copy checkout link
@@ -2448,13 +2442,15 @@ export default function Console() {
                 {selectedCurrent.archived_at ? "Restore transaction" : "Archive transaction"}
               </Button>
               {selectedCurrent.sample === 0 &&
-                Boolean(selectedCurrent.checkout_token) && (
+                selectedCurrent.status === "pending" &&
+                !selectedCurrent.archived_at &&
+                Boolean(selectedCurrent.checkout_url) && (
                   <div className="button-row">
                     <Button
                       variant="secondary"
                       onClick={() =>
                         window.open(
-                          `/checkout/${selectedCurrent.checkout_token}`,
+                          selectedCurrent.checkout_url!,
                           "_blank",
                           "noopener"
                         )
@@ -2464,7 +2460,7 @@ export default function Console() {
                     </Button>
                     <Button
                       variant="ghost"
-                      onClick={() => copy(`${window.location.origin}/checkout/${selectedCurrent.checkout_token}`)}
+                      onClick={() => copy(selectedCurrent.checkout_url!)}
                     >
                       Copy checkout link <HugeiconsIcon icon={Copy01Icon} />
                     </Button>

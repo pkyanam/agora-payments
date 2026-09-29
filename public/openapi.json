@@ -1121,7 +1121,7 @@
           },
           "checkout_url": {
             "type": "string",
-            "description": "Absolute Agora checkout wrapper URL returned on creation. In the hosted QA deployment it opens Stripe-hosted test Checkout."
+            "description": "Canonical absolute Agora checkout URL returned by create, retry, read, and list responses. Use verbatim; payment IDs and provider Checkout URLs are not payer links."
           },
           "sample": {
             "type": "integer",
