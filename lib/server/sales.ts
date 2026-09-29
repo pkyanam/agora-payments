@@ -25,15 +25,18 @@ function customerById(store: LedgerStore, tenantId: string, customerId: string) 
 }
 function saveCustomer(store: LedgerStore, tenantId: string, name: string, normalizedEmail?: string) {
   const existing = normalizedEmail
-    ? store.one<Customer>('SELECT * FROM customers WHERE tenant_id=? AND email_normalized=?', tenantId, normalizedEmail)
+    ? store.one<Customer>('SELECT * FROM customers WHERE tenant_id=? AND email=? COLLATE NOCASE AND name=?', tenantId, normalizedEmail, name)
     : undefined;
   const now = store.now();
   if (existing) {
     store.run('UPDATE customers SET name=?,updated_at=? WHERE id=? AND tenant_id=?', name, now, existing.id, tenantId);
     return store.one<Customer>('SELECT * FROM customers WHERE id=? AND tenant_id=?', existing.id, tenantId)!;
   }
+  // Older schemas impose one normalized email per tenant. Keep the email on the
+  // distinct customer row, but only reserve the lookup key for the first identity.
+  const reservedEmail = normalizedEmail && !store.one('SELECT id FROM customers WHERE tenant_id=? AND email_normalized=?', tenantId, normalizedEmail) ? normalizedEmail : null;
   const customer: Customer = { id: store.id('cus'), tenant_id: tenantId, name, email: normalizedEmail || null, created_at: now, updated_at: now };
-  store.run('INSERT INTO customers(id,tenant_id,name,email,email_normalized,created_at,updated_at) VALUES(?,?,?,?,?,?,?)', customer.id, tenantId, name, customer.email, normalizedEmail || null, now, now);
+  store.run('INSERT INTO customers(id,tenant_id,name,email,email_normalized,created_at,updated_at) VALUES(?,?,?,?,?,?,?)', customer.id, tenantId, name, customer.email, reservedEmail, now, now);
   return customer;
 }
 export function createCustomer(store: LedgerStore, actor: Actor, body: unknown) {
@@ -56,7 +59,7 @@ function quoteItems(store: LedgerStore, quoteId: string) {
   return store.all<QuoteItem>('SELECT id,quote_id,product_id,product_name,catalog_version,quantity,unit_amount,line_total,discount_amount,net_total FROM quote_items WHERE quote_id=? ORDER BY rowid', quoteId);
 }
 function quoteById(store: LedgerStore, tenantId: string, quoteId: string): Quote {
-  const row = store.one<Quote & { email_normalized?: string | null }>(`SELECT q.*,c.name AS customer_name,c.email AS customer_email
+  const row = store.one<Quote & { email_normalized?: string | null }>(`SELECT q.*,COALESCE(q.customer_name_snapshot,c.name) AS customer_name,COALESCE(q.customer_email_snapshot,c.email) AS customer_email
     FROM quotes q JOIN customers c ON c.id=q.customer_id AND c.tenant_id=q.tenant_id WHERE q.id=? AND q.tenant_id=?`, quoteId, tenantId);
   if (!row) throw new ApiError(404, 'not_found', 'Quote not found.');
   const status = row.status === 'open' && Date.parse(row.expires_at) <= Date.now() ? 'expired' : row.status;
@@ -100,11 +103,36 @@ export function createQuote(store: LedgerStore, actor: Actor, body: unknown, env
   const quoteId = store.id('quo');
   const token=randomBytes(32).toString('base64url');
   const providerMode=actor.credential?.provider_mode||(environment.AGORA_PAYMENT_PROVIDER==='stripe'?(environment.AGORA_STRIPE_MODE==='live'?'live':environment.AGORA_STRIPE_MODE==='test'?'test':'invalid'):'sandbox');
-  store.run('INSERT INTO quotes(id,tenant_id,customer_id,status,currency,subtotal_amount,discount_amount,total_amount,expires_at,created_at,created_by,token_hash,token_ciphertext,creator_credential_id,amount_limit_snapshot,provider_mode) VALUES(?,?,?,\'open\',\'usd\',?,?,?,?,?,?,?,?,?,?,?)', quoteId, actor.tenant_id, customer.id, subtotal, discount, total, expiresAt, now, actor.name, createHash('sha256').update(token).digest('hex'), encryptWorkspaceSecret(token,environment), actor.credential?.id||null, actor.credential?.max_amount||null, providerMode);
+  store.run('INSERT INTO quotes(id,tenant_id,customer_id,status,currency,subtotal_amount,discount_amount,total_amount,expires_at,created_at,created_by,token_hash,token_ciphertext,creator_credential_id,amount_limit_snapshot,provider_mode,customer_name_snapshot,customer_email_snapshot,version) VALUES(?,?,?,\'open\',\'usd\',?,?,?,?,?,?,?,?,?,?,?,?,?,1)', quoteId, actor.tenant_id, customer.id, subtotal, discount, total, expiresAt, now, actor.name, createHash('sha256').update(token).digest('hex'), encryptWorkspaceSecret(token,environment), actor.credential?.id||null, actor.credential?.max_amount||null, providerMode, customer.name, customer.email);
   let remainingDiscount=discount;
   for (let index=0;index<items.length;index++) { const item=items[index]!; const allocated=index===items.length-1?remainingDiscount:Math.min(remainingDiscount,Math.floor(discount*item.line_total/subtotal));remainingDiscount-=allocated;const netTotal=item.line_total-allocated;store.run('INSERT INTO quote_items(id,quote_id,product_id,product_name,catalog_version,quantity,unit_amount,line_total,discount_amount,net_total) VALUES(?,?,?,?,?,?,?,?,?,?)', store.id('qit'), quoteId, item.product.id, item.product.name, item.product.version || 1, item.quantity, item.product.amount, item.line_total, allocated, netTotal); }
   store.event('quote.created', actor.name, quoteId, { customer_id: customer.id, total_amount: total, expires_at: expiresAt }, actor.tenant_id);
   return {...quoteById(store, actor.tenant_id, quoteId),quote_token:token};
+}
+
+export function updateQuote(store:LedgerStore,actor:Actor,quoteId:string,body:unknown,environment:PaymentProviderEnvironment=process.env) {
+  requireScope(actor,'quotes:write');
+  const input=parse(z.object({expected_version:z.number().int().min(1),customer_id:text.optional(),customer:z.object({name:text,email:email.optional()}).strict().optional(),items:z.array(z.object({product_id:text,quantity:z.number().int().min(1).max(1000)}).strict()).min(1).max(50).optional(),discount_amount:cents.optional(),expires_at:z.string().datetime({offset:true}).optional()}).strict().refine(v=>!(v.customer_id&&v.customer),{message:'Provide customer_id or customer, not both.'}),body);
+  const quote=store.one<{status:string;version:number;expires_at:string;customer_id:string;subtotal_amount:number;discount_amount:number;total_amount:number;customer_name_snapshot:string|null;customer_email_snapshot:string|null}>('SELECT status,version,expires_at,customer_id,subtotal_amount,discount_amount,total_amount,customer_name_snapshot,customer_email_snapshot FROM quotes WHERE id=? AND tenant_id=?',quoteId,actor.tenant_id);
+  if(!quote)throw new ApiError(404,'not_found','Quote not found.');
+  if(quote.status!=='open'||Date.parse(quote.expires_at)<=Date.now())throw new ApiError(409,'quote_not_editable','Only open, unexpired quotes can be edited.');
+  if(quote.version!==input.expected_version)throw new ApiError(409,'version_conflict','This quote changed. Reload it before saving.');
+  const now=store.now(),nowMs=Date.parse(now),expiresAt=input.expires_at?new Date(input.expires_at).toISOString():quote.expires_at;
+  if(!Number.isFinite(Date.parse(expiresAt))||Date.parse(expiresAt)<=nowMs||Date.parse(expiresAt)>nowMs+30*86400_000)throw new ApiError(422,'invalid_expiration','Quote expiry must be in the future and no more than 30 days away.');
+  const oldItems=store.all<QuoteItem>('SELECT * FROM quote_items WHERE quote_id=? ORDER BY rowid',quoteId);
+  let items=input.items?.map(item=>{const product=store.one<Product>('SELECT * FROM products WHERE id=? AND tenant_id=? AND COALESCE(archived_at,\'\')=\'\'',item.product_id,actor.tenant_id);if(!product)throw new ApiError(404,'not_found',`Active product not found: ${item.product_id}.`);const line_total=product.amount*item.quantity;if(!Number.isSafeInteger(line_total)||line_total>10_000_000)throw new ApiError(422,'quote_total_limit','A quote line exceeds the supported USD amount.');return{product,quantity:item.quantity,line_total};});
+  if(items&&items.length===oldItems.length&&items.every((item,index)=>item.product.id===oldItems[index]?.product_id&&item.quantity===oldItems[index]?.quantity))items=undefined;
+  const subtotal=items?items.reduce((sum,item)=>sum+item.line_total,0):quote.subtotal_amount,discount=input.discount_amount??quote.discount_amount,total=subtotal-discount;
+  if(!Number.isSafeInteger(subtotal)||subtotal>10_000_000||discount>subtotal||total<1)throw new ApiError(422,'invalid_quote_total','Quote total must be between 1 and 10,000,000 USD cents and discount cannot exceed subtotal.');
+  const customer=input.customer_id?customerById(store,actor.tenant_id,input.customer_id):input.customer?saveCustomer(store,actor.tenant_id,input.customer.name,input.customer.email):customerById(store,actor.tenant_id,quote.customer_id);
+  const customerName=input.customer_id||input.customer?customer.name:quote.customer_name_snapshot||customer.name,customerEmail=input.customer_id||input.customer?customer.email:quote.customer_email_snapshot??customer.email;
+  const token=randomBytes(32).toString('base64url');
+  const result=store.run("UPDATE quotes SET customer_id=?,customer_name_snapshot=?,customer_email_snapshot=?,subtotal_amount=?,discount_amount=?,total_amount=?,expires_at=?,version=version+1,token_hash=?,token_ciphertext=? WHERE id=? AND tenant_id=? AND status='open' AND version=? AND expires_at>?",customer.id,customerName,customerEmail,subtotal,discount,total,expiresAt,createHash('sha256').update(token).digest('hex'),encryptWorkspaceSecret(token,environment),quoteId,actor.tenant_id,input.expected_version,now) as {changes?:number|bigint;rowsWritten?:number|bigint};
+  if(Number(result.changes??result.rowsWritten??0)!==1)throw new ApiError(409,'version_conflict','This quote changed. Reload it before saving.');
+  if(items){store.run('DELETE FROM quote_items WHERE quote_id=?',quoteId);let remaining=discount;for(let i=0;i<items.length;i++){const item=items[i]!,allocated=i===items.length-1?remaining:Math.min(remaining,Math.floor(discount*item.line_total/subtotal));remaining-=allocated;const net_total=item.line_total-allocated;store.run('INSERT INTO quote_items(id,quote_id,product_id,product_name,catalog_version,quantity,unit_amount,line_total,discount_amount,net_total) VALUES(?,?,?,?,?,?,?,?,?,?)',store.id('qit'),quoteId,item.product.id,item.product.name,item.product.version||1,item.quantity,item.product.amount,item.line_total,allocated,net_total);}}
+  else if(input.discount_amount!==undefined){let remaining=discount;for(let i=0;i<oldItems.length;i++){const item=oldItems[i]!,allocated=i===oldItems.length-1?remaining:Math.min(remaining,Math.floor(discount*item.line_total/subtotal));remaining-=allocated;store.run('UPDATE quote_items SET discount_amount=?,net_total=? WHERE id=? AND quote_id=?',allocated,item.line_total-allocated,item.id,quoteId);}}
+  store.event('quote.updated',actor.name,quoteId,{version:input.expected_version+1,total_amount:total},actor.tenant_id);
+  return {...quoteById(store,actor.tenant_id,quoteId),quote_token:token};
 }
 
 export function quoteShareUrl(store:LedgerStore,actor:Actor,quoteId:string,origin:string,environment:PaymentProviderEnvironment=process.env){requireScope(actor,'quotes:read');const row=store.one<{token_ciphertext:string|null}>('SELECT token_ciphertext FROM quotes WHERE id=? AND tenant_id=?',quoteId,actor.tenant_id);if(!row)throw new ApiError(404,'not_found','Quote not found.');if(!row.token_ciphertext)return null;const token=decryptWorkspaceSecret(row.token_ciphertext,environment);return`${origin.replace(/\/$/,'')}/quote#${token}`;}
@@ -130,14 +158,15 @@ export function acceptPublicQuote(store:LedgerStore,token:string,environment:Pay
   if(currentMode!==guard.provider_mode)throw new ApiError(409,'quote_mode_changed','The seller’s payment mode changed after this quote was issued. Ask for a new quote.');
   let actor:Actor={id:'public_quote_capability',name:'Customer quote acceptance',scopes:['*'],tenant_id:guard.tenant_id};
   if(guard.creator_credential_id){const key=store.one<Credential & {scopes:string}>('SELECT * FROM credentials WHERE id=? AND revoked=0',guard.creator_credential_id);if(!key||key.tenant_id!==guard.tenant_id)throw new ApiError(410,'quote_unavailable','This quote is no longer available.');const credential={...key,scopes:JSON.parse(key.scopes) as string[]};actor={id:key.id,name:key.name,tenant_id:key.tenant_id,scopes:credential.scopes,credential};}
-  return acceptQuote(store,actor,quote.id,environment);
+  return acceptQuote(store,actor,quote.id,environment,quote.version);
 }
 
 function paymentId(store: LedgerStore) { return store.id('pay'); }
-export function acceptQuote(store: LedgerStore, actor: Actor, quoteId: string, environment: PaymentProviderEnvironment = process.env) {
+export function acceptQuote(store: LedgerStore, actor: Actor, quoteId: string, environment: PaymentProviderEnvironment = process.env, expectedVersion?:number) {
   requireScope(actor, 'quotes:write');
   requireScope(actor, 'payments:write');
   const quote = quoteById(store, actor.tenant_id, quoteId);
+  if(expectedVersion!==undefined&&quote.version!==expectedVersion)throw new ApiError(409,'version_conflict','This quote changed after review. Review the latest version before accepting.');
   const selectedProvider=environment.AGORA_PAYMENT_PROVIDER==='stripe'?'stripe':'sandbox';const selectedMode=selectedProvider==='stripe'?(environment.AGORA_STRIPE_MODE==='live'?'live':environment.AGORA_STRIPE_MODE==='test'?'test':'invalid'):'sandbox';
   assertResourceMode(actor,quote.provider_mode,'Quote not found.');
   if(selectedMode!==quote.provider_mode)throw new ApiError(409,'quote_mode_changed','The configured payment mode changed after this quote was issued. Create a new quote.');
@@ -145,8 +174,8 @@ export function acceptQuote(store: LedgerStore, actor: Actor, quoteId: string, e
   if (quote.status !== 'open') throw new ApiError(409, 'quote_not_open', 'This quote is no longer available for acceptance.');
   if (actor.credential && quote.total_amount > actor.credential.max_amount) throw new ApiError(403, 'limit_exceeded', 'This quote exceeds the key’s per-payment amount limit.');
   const acceptedAt = store.now();
-  const changed = store.run("UPDATE quotes SET status='accepted',accepted_at=? WHERE id=? AND tenant_id=? AND status='open' AND expires_at>?", acceptedAt, quoteId, actor.tenant_id, acceptedAt) as {changes?:number|bigint;rowsWritten?:number|bigint};
-  if (Number(changed.changes??changed.rowsWritten) !== 1) throw new ApiError(409, 'quote_not_open', 'This quote expired or was already accepted.');
+  const changed = store.run("UPDATE quotes SET status='accepted',accepted_at=? WHERE id=? AND tenant_id=? AND status='open' AND expires_at>? AND (? IS NULL OR version=?)", acceptedAt, quoteId, actor.tenant_id, acceptedAt, expectedVersion??null, expectedVersion??null) as {changes?:number|bigint;rowsWritten?:number|bigint};
+  if (Number(changed.changes??changed.rowsWritten) !== 1) throw new ApiError(409, expectedVersion===undefined?'quote_not_open':'version_conflict', expectedVersion===undefined?'This quote expired or was already accepted.':'This quote changed after review. Review the latest version before accepting.');
   const customer = customerById(store, actor.tenant_id, quote.customer_id);
   const first = quote.items[0];
   const orderId = store.id('ord');

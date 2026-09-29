@@ -8,6 +8,22 @@ const dir=mkdtempSync(join(tmpdir(),'agora-sales-'));process.env.AGORA_DATABASE_
 const s=await import('../lib/server/local');const d=await import('../lib/server/db');
 const product=s.createProduct(s.owner,{name:'Consultation',amount:5000});
 
+await test('same email keeps distinct customer identities and quote edits preserve snapshots with versioned capability rotation',()=>{
+ const email='shared@example.test';
+ const a=s.createQuote(s.owner,{customer:{name:'Austin Hedges',email},items:[{product_id:product.id,quantity:1}]});
+ const b=s.createQuote(s.owner,{customer:{name:'Bala Kyanam',email},items:[{product_id:product.id,quantity:1}]});
+ const aAgain=s.createQuote(s.owner,{customer:{name:'Austin Hedges',email},items:[{product_id:product.id,quantity:1}]});
+ assert.notEqual(a.customer_id,b.customer_id);assert.equal(a.customer_id,aAgain.customer_id);assert.equal(s.listCustomers(s.owner,0,100).data.filter(c=>c.email===email).length,2);
+ const oldLink=a.quote_token;const saved=s.updateQuote(s.owner,a.id,{expected_version:a.version,customer:{name:'Austin Hedges',email}});
+ assert.equal(saved.customer_name,'Austin Hedges');assert.equal(saved.total_amount,a.total_amount);assert.equal(saved.items[0]?.unit_amount,a.items[0]?.unit_amount);assert.equal(saved.version,a.version+1);
+ assert.notEqual(s.quoteShareUrl(s.owner,a.id,'https://agora.example'),`https://agora.example/quote#${oldLink}`);
+ assert.throws(()=>s.reviewPublicQuote(oldLink),(error:unknown)=>error instanceof s.ApiError&&error.code==='not_found');
+ const reviewed=s.reviewPublicQuote(saved.quote_token);const edited=s.updateQuote(s.owner,a.id,{expected_version:saved.version,customer_id:b.customer_id});
+ assert.equal(edited.total_amount,a.total_amount);assert.equal(edited.customer_name,'Bala Kyanam');
+ assert.throws(()=>s.acceptPublicQuote(saved.quote_token),(error:unknown)=>error instanceof s.ApiError&&error.code==='not_found');
+ assert.equal(reviewed.internalQuote.version,saved.version);
+});
+
 await test('quotes snapshot catalog revisions and discounts; acceptance creates one order and payment',()=>{
  const quote=s.createQuote(s.owner,{customer:{name:'Customer',email:'buyer@example.test'},items:[{product_id:product.id,quantity:2}],discount_amount:1000});
  assert.equal(quote.total_amount,9000);assert.equal(quote.items[0]?.catalog_version,1);assert.equal(quote.items[0]?.net_total,9000);

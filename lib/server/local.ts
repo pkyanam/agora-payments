@@ -43,6 +43,7 @@ export const createCustomer=service.createCustomer;
 export const getCustomer=service.getCustomer;
 export const listCustomers=service.listCustomers;
 export const createQuote=service.createQuote;
+export const updateQuote=service.updateQuote;
 export const getQuote=service.getQuote;
 export const quoteShareUrl=service.quoteShareUrl;
 export const listQuotes=service.listQuotes;

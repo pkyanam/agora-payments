@@ -13,7 +13,7 @@ import { archivePayment, archiveProduct } from './archive';
 import { paymentActivity as buildPaymentActivity, type ActivityRange } from './activity';
 import { listStripeRiskSignals, persistStripeRiskSignal, type RiskMode } from './risk-signals';
 import { canonicalCheckoutUrl } from './public-payment';
-import { acceptPublicQuote as acceptSalesPublicQuote, acceptQuote as acceptSalesQuote, createCustomer as createSalesCustomer, createDirectSaleRecords, createQuote as createSalesQuote, getCustomer as getSalesCustomer, getFulfillment as getSalesFulfillment, getOrder as getSalesOrder, getOrderReceipt as getSalesOrderReceipt, getQuote as getSalesQuote, listCustomers as listSalesCustomers, listFulfillments as listSalesFulfillments, listOrders as listSalesOrders, listQuotes as listSalesQuotes, markOrderPaymentState, quoteShareUrl as salesQuoteShareUrl, reviewPublicQuote as reviewSalesPublicQuote, transitionFulfillment as transitionSalesFulfillment } from './sales';
+import { acceptPublicQuote as acceptSalesPublicQuote, acceptQuote as acceptSalesQuote, createCustomer as createSalesCustomer, createDirectSaleRecords, createQuote as createSalesQuote, updateQuote as updateSalesQuote, getCustomer as getSalesCustomer, getFulfillment as getSalesFulfillment, getOrder as getSalesOrder, getOrderReceipt as getSalesOrderReceipt, getQuote as getSalesQuote, listCustomers as listSalesCustomers, listFulfillments as listSalesFulfillments, listOrders as listSalesOrders, listQuotes as listSalesQuotes, markOrderPaymentState, quoteShareUrl as salesQuoteShareUrl, reviewPublicQuote as reviewSalesPublicQuote, transitionFulfillment as transitionSalesFulfillment } from './sales';
 export { ApiError } from './errors';
 export type Actor={id:string;name:string;scopes:string[];tenant_id:string;credential?:Credential};
 export type PaymentProviderReadiness={provider_status:'sandbox'|'ready'|'setup_required';checkout_enabled:boolean;provider_mode?:'test'|'live'};
@@ -256,6 +256,7 @@ export function createService(store:LedgerStore,environment:PaymentProviderEnvir
  getCustomer:(actor:Actor,id:string)=>getSalesCustomer(store,actor,id),
  listCustomers:(actor:Actor,cursor:number,limit:number)=>listSalesCustomers(store,actor,cursor,limit),
  createQuote:(actor:Actor,body:unknown)=>createSalesQuote(store,actor,body,environment),
+ updateQuote:(actor:Actor,id:string,body:unknown)=>updateSalesQuote(store,actor,id,body,environment),
  getQuote:(actor:Actor,id:string)=>getSalesQuote(store,actor,id),
  quoteShareUrl:(actor:Actor,id:string,origin:string)=>salesQuoteShareUrl(store,actor,id,origin,environment),
  listQuotes:(actor:Actor,cursor:number,limit:number)=>listSalesQuotes(store,actor,cursor,limit),
