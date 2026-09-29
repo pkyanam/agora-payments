@@ -1,8 +1,19 @@
 import { createService } from './service';
 import { localStore } from './db';
 
-const service=createService(localStore);
-service.migrateMfaEncryptionKeys();
+const rawService=createService(localStore);
+let mfaMigrationReady=false;
+const service=new Proxy(rawService,{
+ get(target,property){
+  const value=Reflect.get(target,property,target) as unknown;
+  if(typeof value!=='function')return value;
+  return (...args:unknown[])=>{
+   if(property==='migrateMfaEncryptionKeys')mfaMigrationReady=true;
+   else if(!mfaMigrationReady){rawService.migrateMfaEncryptionKeys();mfaMigrationReady=true;}
+   return value.apply(target,args);
+  };
+ },
+});
 export const migrateMfaEncryptionKeys=service.migrateMfaEncryptionKeys;
 export const owner=service.owner;
 export const authenticate=service.authenticate;

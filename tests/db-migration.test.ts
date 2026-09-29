@@ -8,7 +8,7 @@ import { join } from 'node:path';
 test('concurrent fresh SQLite initialization serializes schema migrations', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'agora-db-migration-'));
   const database = join(directory, 'fresh.sqlite');
-  const processes = Array.from({ length: 8 }, () => spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', "await import('./lib/server/db.ts')"], {
+  const processes = Array.from({ length: 8 }, () => spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', "const store=await import('./lib/server/db.ts');store.one('SELECT 1')"], {
     cwd: process.cwd(),
     env: { ...process.env, AGORA_DATABASE_PATH: database, AGORA_SEED: 'false', NODE_ENV: 'production' },
     stdio: ['ignore', 'ignore', 'pipe'],

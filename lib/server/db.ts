@@ -5,10 +5,9 @@ import { randomUUID } from 'node:crypto';
 import type { LedgerStore, SqlValue } from './store';
 import { dispatchWebhookBatch, enqueueWebhookEvent } from './outgoing-webhooks';
 import { createNodeWebhookFetch } from './outgoing-webhooks-node';
-const path = process.env.AGORA_DATABASE_PATH || resolve('.data/agora.sqlite');
-mkdirSync(dirname(path), { recursive:true });
-export const db = new DatabaseSync(path);
-db.exec(`PRAGMA busy_timeout=15000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
+let dbInstance: DatabaseSync | undefined;
+let webhookTimer:ReturnType<typeof setInterval>|undefined;
+const schema = `
 CREATE TABLE IF NOT EXISTS products(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,amount INTEGER NOT NULL CHECK(amount>0),currency TEXT NOT NULL DEFAULT 'usd' CHECK(currency='usd'),created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS payments(id TEXT PRIMARY KEY,product_id TEXT NOT NULL REFERENCES products(id),product_name TEXT NOT NULL,customer TEXT NOT NULL,amount INTEGER NOT NULL CHECK(amount>0),refunded INTEGER NOT NULL DEFAULT 0 CHECK(refunded>=0 AND refunded<=amount),currency TEXT NOT NULL DEFAULT 'usd',status TEXT NOT NULL CHECK(status IN ('pending','succeeded','failed')),actor TEXT NOT NULL,created_at TEXT NOT NULL,checkout_token TEXT NOT NULL UNIQUE,sample INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS credentials(id TEXT PRIMARY KEY,name TEXT NOT NULL,kind TEXT NOT NULL,prefix TEXT NOT NULL,hash TEXT NOT NULL UNIQUE,scopes TEXT NOT NULL,max_amount INTEGER NOT NULL,refund_budget INTEGER NOT NULL,spent INTEGER NOT NULL DEFAULT 0,revoked INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL);
@@ -38,13 +37,8 @@ CREATE TABLE IF NOT EXISTS stripe_risk_signals(id TEXT PRIMARY KEY,tenant_id TEX
 CREATE INDEX IF NOT EXISTS stripe_risk_scope ON stripe_risk_signals(tenant_id,mode,created_at,id);
 CREATE INDEX IF NOT EXISTS payment_created ON payments(created_at);
 CREATE INDEX IF NOT EXISTS event_created ON events(created_at);
-`);
-// Multiple Next build workers may initialize the same fresh SQLite file at once.
-// Serialize the check-and-ALTER sequence so each worker re-reads the schema after
-// acquiring the write lock instead of racing on a stale PRAGMA table_info result.
-db.exec('BEGIN IMMEDIATE');
-try {
-for(const [table,column,definition] of [
+`;
+const migrations = [
  ['products','tenant_id',"TEXT NOT NULL DEFAULT 'owner'"],
  ['products','archived_at','TEXT'],
  ['payments','tenant_id',"TEXT NOT NULL DEFAULT 'owner'"],
@@ -65,34 +59,70 @@ for(const [table,column,definition] of [
  ['refunds','provider_refund_id','TEXT'],
  ['refunds','provider_mode','TEXT'],
  ['refunds','credential_id','TEXT'],
-] as const){const cols=db.prepare(`PRAGMA table_info(${table})`).all() as {name:string}[];if(!cols.some(c=>c.name===column))db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);}
-db.exec("CREATE UNIQUE INDEX IF NOT EXISTS tenant_email_unique ON tenants(email COLLATE NOCASE);");
-db.exec("CREATE UNIQUE INDEX IF NOT EXISTS merchant_email_unique ON merchant_users(email COLLATE NOCASE);");
-db.exec('COMMIT');
-} catch(error) {
-  db.exec('ROLLBACK');
-  throw error;
+] as const;
+export const db = new Proxy({} as DatabaseSync, {
+  get(_target, property) {
+    const instance = getDatabase();
+    const value = Reflect.get(instance, property, instance) as unknown;
+    return typeof value === 'function' ? value.bind(instance) : value;
+  },
+});
+function getDatabase():DatabaseSync {
+  if(dbInstance)return dbInstance;
+  const path=process.env.AGORA_DATABASE_PATH||resolve('.data/agora.sqlite');
+  mkdirSync(dirname(path),{recursive:true});
+  const instance=new DatabaseSync(path);
+  instance.exec('PRAGMA busy_timeout=15000; PRAGMA foreign_keys=ON;');
+  try {
+    instance.exec('PRAGMA journal_mode=WAL;');
+    // Hold SQLite's write lock across schema creation and every migration so
+    // simultaneous runtime workers cannot make decisions from stale schemas.
+    instance.exec('BEGIN IMMEDIATE');
+    instance.exec(schema);
+    for(const [table,column,definition] of migrations){
+      const cols=instance.prepare(`PRAGMA table_info(${table})`).all() as {name:string}[];
+      if(!cols.some(c=>c.name===column))instance.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+    instance.exec("CREATE UNIQUE INDEX IF NOT EXISTS tenant_email_unique ON tenants(email COLLATE NOCASE);");
+    instance.exec("CREATE UNIQUE INDEX IF NOT EXISTS merchant_email_unique ON merchant_users(email COLLATE NOCASE);");
+    instance.exec('COMMIT');
+  } catch(error) {
+    try { instance.exec('ROLLBACK'); } catch {}
+    instance.close();
+    throw error;
+  }
+  dbInstance=instance;
+  try {
+    initializeData();
+    scheduleWebhookAlarm();
+  } catch(error) {
+    dbInstance=undefined;
+    instance.close();
+    throw error;
+  }
+  return instance;
 }
 export const now = () => new Date().toISOString();
 export const id = (prefix:string) => `${prefix}_${randomUUID().replaceAll('-','').slice(0,20)}`;
 export function one<T>(sql:string,...args:SQLInputValue[]):T|undefined { return db.prepare(sql).get(...args) as T|undefined; }
 export function all<T>(sql:string,...args:SQLInputValue[]):T[] { return db.prepare(sql).all(...args) as T[]; }
 export function run(sql:string,...args:SQLInputValue[]) { return db.prepare(sql).run(...args); }
-export function transaction<T>(fn:()=>T):T { db.exec('BEGIN IMMEDIATE'); try { const value=fn(); db.exec('COMMIT'); return value; } catch(e){ db.exec('ROLLBACK'); throw e; } }
+export function transaction<T>(fn:()=>T):T { db.exec('BEGIN IMMEDIATE'); try { const value=fn(); db.exec('COMMIT'); return value; } catch(e){ try { db.exec('ROLLBACK'); } catch {} throw e; } }
 export function event(type:string,actor:string,object_id:string,data:object={},tenantId='owner') { const eventId=id('evt'); const created=now();run('INSERT INTO events(id,type,actor,object_id,data,created_at,tenant_id) VALUES(?,?,?,?,?,?,?)',eventId,type,actor,object_id,JSON.stringify(data),created,tenantId); enqueueWebhookEvent(localStore,{id:eventId,type,actor,object_id,data,tenant_id:tenantId,created_at:created}); return eventId; }
 export function journal(reference:string,amount:number,account:string,tenantId='owner'){ const t=now();run('INSERT INTO journal(id,reference_id,account,amount,created_at,tenant_id) VALUES(?,?,?,?,?,?)',id('jrn'),reference,account,amount,t,tenantId);run('INSERT INTO journal(id,reference_id,account,amount,created_at,tenant_id) VALUES(?,?,?,?,?,?)',id('jrn'),reference,'merchant_proceeds',-amount,t,tenantId); }
-run("INSERT OR IGNORE INTO tenants(id,business_name,email,status,provider,created_at,approved_at) VALUES('owner',?,?,'approved','stripe',?,?)",process.env.AGORA_WORKSPACE_NAME||'Agora workspace',process.env.AGORA_OWNER_EMAIL||'owner@localhost',now(),now());
-let webhookTimer:ReturnType<typeof setInterval>|undefined;
 function scheduleWebhookAlarm(){
   if(process.env.AGORA_DEPLOYMENT_TARGET!=='node'||process.env.AGORA_DEPLOYMENT_TYPE!=='community'||process.env.VERCEL==='1'||process.env.VERCEL_ENV)return;
   if(webhookTimer)return;
   webhookTimer=setInterval(()=>{void dispatchWebhookBatch(localStore,process.env,createNodeWebhookFetch(process.env)).catch(()=>{});},5000);
   webhookTimer.unref?.();
 }
-const initialSetupHash=process.env.AGORA_OWNER_SETUP_TOKEN_HASH;if(!one("SELECT id FROM owner_password WHERE id='owner'")&&initialSetupHash&&/^[a-f0-9]{64}$/.test(initialSetupHash))run("INSERT OR IGNORE INTO owner_setup(id,token_hash,expires_at) VALUES('owner',?,?)",initialSetupHash,new Date(Date.now()+7*24*60*60*1000).toISOString());
 export const localStore:LedgerStore={one:<T>(sql:string,...args:SqlValue[])=>one<T>(sql,...args as SQLInputValue[]),all:<T>(sql:string,...args:SqlValue[])=>all<T>(sql,...args as SQLInputValue[]),run:(sql:string,...args:SqlValue[])=>run(sql,...args as SQLInputValue[]),transaction,id,now,event,journal,scheduleWebhookAlarm};
-scheduleWebhookAlarm();
-if (!one('SELECT id FROM products LIMIT 1') && (process.env.AGORA_SEED === 'true' || (process.env.NODE_ENV !== 'production' && process.env.AGORA_SEED !== 'false'))) transaction(()=>{
+function initializeData(){
+ transaction(()=>{
+ run("INSERT OR IGNORE INTO tenants(id,business_name,email,status,provider,created_at,approved_at) VALUES('owner',?,?,'approved','stripe',?,?)",process.env.AGORA_WORKSPACE_NAME||'Agora workspace',process.env.AGORA_OWNER_EMAIL||'owner@localhost',now(),now());
+ const initialSetupHash=process.env.AGORA_OWNER_SETUP_TOKEN_HASH;
+ if(!one("SELECT id FROM owner_password WHERE id='owner'")&&initialSetupHash&&/^[a-f0-9]{64}$/.test(initialSetupHash))run("INSERT OR IGNORE INTO owner_setup(id,token_hash,expires_at) VALUES('owner',?,?)",initialSetupHash,new Date(Date.now()+7*24*60*60*1000).toISOString());
+ if (one('SELECT id FROM products LIMIT 1') || !(process.env.AGORA_SEED === 'true' || (process.env.NODE_ENV !== 'production' && process.env.AGORA_SEED !== 'false'))) return;
  const date=new Date();const time=(days:number)=>new Date(date.getTime()-days*86400000).toISOString();
  run('INSERT INTO products(id,name,description,amount,currency,created_at) VALUES(?,?,?,?,?,?)','prod_studio','Studio license','A permanent home for your best work.',4900,'usd',time(25));
  run('INSERT INTO products(id,name,description,amount,currency,created_at) VALUES(?,?,?,?,?,?)','prod_api','API credits','10,000 requests. Build something useful.',2500,'usd',time(25));
@@ -100,4 +130,5 @@ if (!one('SELECT id FROM products LIMIT 1') && (process.env.AGORA_SEED === 'true
  const people=['Olivia Rhye','Phoenix Baker','Lana Steiner','Demi Wilkinson','Drew Cano','Natali Craig','Orlando Diggs','Andi Lane'];
  for(let i=0;i<28;i++){const prod=i%4===0?'prod_session':i%3===0?'prod_api':'prod_studio';const p=one<{name:string;amount:number}>('SELECT * FROM products WHERE id=?',prod)!;const pid=id('pay');const succeeded=i!==7 && i!==14;run('INSERT INTO payments(id,product_id,product_name,customer,amount,refunded,currency,status,actor,created_at,checkout_token,sample) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',pid,prod,p.name,people[i%8]+' · example',p.amount,0,'usd',succeeded?'succeeded':'failed',i%3===0?'Studio agent':'You',time(i),id('demo'),1);if(succeeded)journal(pid,p.amount,'processor_receivable');}
  event('workspace.created','You','workspace_demo',{mode:'sandbox',sample_data:true});
-});
+ });
+}
