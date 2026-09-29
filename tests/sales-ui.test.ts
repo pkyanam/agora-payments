@@ -63,7 +63,7 @@ await test("quote details reopen the original link and only allow editing open q
   }
   let copied = ""
   let edited = 0
-  render(
+  const detailView = render(
     React.createElement(QuoteDetails, {
       quote: openQuote,
       onCopy: (url: string) => (copied = url),
@@ -87,6 +87,18 @@ await test("quote details reopen the original link and only allow editing open q
   )
   assert.equal(copied, openQuote.quote_url)
   assert.equal(edited, 1)
+  const refreshedUrl = `https://agora.example/quote#${"b".repeat(43)}`
+  detailView.rerender(
+    React.createElement(QuoteDetails, {
+      quote: { ...openQuote, version: 3, quote_url: refreshedUrl },
+      onCopy: (url: string) => (copied = url),
+      onEdit: () => edited++,
+    })
+  )
+  fireEvent.click(
+    screen.getByRole("button", { name: "Copy original quote link" })
+  )
+  assert.equal(copied, refreshedUrl)
   cleanup()
 
   render(

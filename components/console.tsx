@@ -995,19 +995,16 @@ export default function Console() {
               Number(form.get("discount_amount") || 0) * 100
             ),
           })
-      setSelectedQuote(
-        editingQuote
-          ? {
-              ...quote,
-              quote_url: editingQuote.quote_url,
-              quote_link_available: editingQuote.quote_link_available,
-            }
-          : quote
-      )
+      setSelectedQuote(quote)
+      if (editingQuote) setQuoteDetail(quote)
       setEditingQuote(null)
       setDialog(null)
       setQuoteLines([])
-      toast.success(editingQuote ? "Quote updated" : "Quote created")
+      toast.success(
+        editingQuote
+          ? "Quote updated. Copy the new link; the previous link no longer works."
+          : "Quote created"
+      )
     } catch (reason) {
       setSalesError(
         reason instanceof Error ? reason.message : "Quote could not be created."
