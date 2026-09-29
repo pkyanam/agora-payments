@@ -61,8 +61,8 @@ export default function Reference() {
         <p>
           Create a scoped, mode-bound key in Developers or Access. Send it as{" "}
           <code>Authorization: Bearer $AGORA_API_KEY</code>. Keys never belong
-          in browser code. Each key is restricted to its merchant workspace
-          and provider mode.
+          in browser code. Each key is restricted to its merchant workspace and
+          provider mode.
         </p>
         <pre>{`POST /api/v1/payments\nAuthorization: Bearer $AGORA_API_KEY\nIdempotency-Key: order-001\nContent-Type: application/json\n\n{ "product_id": "prod_studio", "customer": "Alex" }`}</pre>
         <p>
@@ -70,8 +70,8 @@ export default function Reference() {
           buyer there when provider readiness is confirmed; it opens hosted
           Checkout in the configured provider mode. The app confirms payment
           only after a signed Stripe event updates the payment record. An
-          explicitly configured sandbox may simulate outcomes and never
-          collects card details.
+          explicitly configured sandbox may simulate outcomes and never collects
+          card details.
         </p>
         <p>
           Use the returned <code>checkout_url</code> verbatim. Payment create,
@@ -94,13 +94,89 @@ export default function Reference() {
         ))}
       </section>
       <section>
+        <h2>Catalog, quotes, and fulfillment.</h2>
+        <p>
+          Sales endpoints use the same bearer key, tenant, mode, pagination, and
+          idempotency rules. Existing keys do not gain access to new resources
+          automatically. Check <code>GET /api/v1/account</code> for the key’s
+          scopes, provider mode/readiness, payment limit, and remaining
+          autonomous refund allowance.
+        </p>
+        <div className="endpoint-list">
+          {[
+            [
+              "GET · POST · PATCH",
+              "/api/v1/products",
+              "Catalog read/write; PATCH requires the current expected_version.",
+            ],
+            [
+              "GET · POST",
+              "/api/v1/customers",
+              "Customer records; separate customers:read and customers:write scopes.",
+            ],
+            [
+              "GET · POST",
+              "/api/v1/quotes",
+              "Create expiring quotes from catalog snapshots; GET requires quotes:read, POST quotes:write.",
+            ],
+            [
+              "GET",
+              "/api/v1/orders",
+              "Orders and verified-payment receipts; orders:read.",
+            ],
+            [
+              "GET · POST",
+              "/api/v1/fulfillments",
+              "Read workflow state or claim, complete, fail, and retry delivery; separate fulfillment:read and fulfillment:write scopes.",
+            ],
+            [
+              "POST",
+              "/api/quote/review · /api/quote/accept",
+              "Public capability endpoints; accept only after customer review and explicit confirmation.",
+            ],
+          ].map(([methods, path, description]) => (
+            <article className="endpoint" key={path}>
+              <span>{methods}</span>
+              <div>
+                <code>{path}</code>
+                <p>{description}</p>
+              </div>
+            </article>
+          ))}
+        </div>
+        <p>
+          Product edits require <code>expected_version</code> and preserve
+          earlier quote and order snapshots. Quote creation returns a capability
+          URL in <code>quote_url</code>; share that URL as returned. The
+          customer reviews the merchant, item, amount, and expiry, then
+          explicitly accepts before checkout begins. Expired or accepted quotes
+          cannot start another order. The API acceptance route requires the
+          relevant write scopes and does not represent customer consent.
+        </p>
+        <p>
+          A verified provider payment unlocks fulfillment. Pending or failed
+          payments do not. Claim, complete, fail, and retry mutations require
+          <code> fulfillment:write</code> and an <code>Idempotency-Key</code>;
+          they record state and do not run arbitrary code or integrations. Order
+          receipts are available only after verified payment. Refund projections
+          include refunded and net amounts; a full refund cancels unfinished
+          fulfillment while preserving completed delivery history. Quote
+          creation takes <code>customer</code>, <code>items</code>, optional{" "}
+          <code>discount_amount</code>, and optional ISO <code>expires_at</code>{" "}
+          (default seven days; maximum 30). Product amounts and discounts are
+          integer USD cents; discounts cannot exceed the subtotal. Reuse the
+          returned <code>quote_url</code> for review and acceptance; never
+          derive one from an ID.
+        </p>
+      </section>
+      <section>
         <h2>Retries that don’t repeat the money.</h2>
         <p>
-          Create and refund POSTs require an <code>Idempotency-Key</code>. Repeat the same
-          key and JSON payload to retrieve the original result. Reusing it with
-          changed data returns 409. Keys are scoped to the authenticated
-          credential and endpoint. If a request times out, keep the same key; do
-          not assume failure or generate a new operation.
+          Create and refund POSTs require an <code>Idempotency-Key</code>.
+          Repeat the same key and JSON payload to retrieve the original result.
+          Reusing it with changed data returns 409. Keys are scoped to the
+          authenticated credential and endpoint. If a request times out, keep
+          the same key; do not assume failure or generate a new operation.
         </p>
         <p>
           Payment reconciliation uses POST but is safe to repeat and does not
@@ -136,7 +212,8 @@ export default function Reference() {
           <code>next_cursor</code>. Events are ordered by insertion and include
           type, actor, object ID and timestamp. Signed Stripe webhooks update
           payment and refund state. The API event stream is polled separately;
-          this deployment does not configure merchant-directed outgoing webhooks.
+          this deployment does not configure merchant-directed outgoing
+          webhooks.
         </p>
         <p>
           Payment states are <code>pending</code>, <code>succeeded</code>, and{" "}
@@ -163,8 +240,14 @@ export default function Reference() {
           service. It reads <code>AGORA_URL</code> and{" "}
           <code>AGORA_API_KEY</code>, returns JSON, and exits nonzero on errors.
           Source and installation guidance are in the{" "}
-          <a href="https://github.com/pkyanam/agora-cli" target="_blank" rel="noreferrer">CLI repository</a>;
-          access follows that repository’s permissions.
+          <a
+            href="https://github.com/pkyanam/agora-cli"
+            target="_blank"
+            rel="noreferrer"
+          >
+            CLI repository
+          </a>
+          ; access follows that repository’s permissions.
         </p>
         <a className="reference-link" href="/openapi.json">
           Download the OpenAPI specification ↗

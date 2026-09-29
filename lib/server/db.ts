@@ -8,7 +8,8 @@ import { createNodeWebhookFetch } from './outgoing-webhooks-node';
 let dbInstance: DatabaseSync | undefined;
 let webhookTimer:ReturnType<typeof setInterval>|undefined;
 const schema = `
-CREATE TABLE IF NOT EXISTS products(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,amount INTEGER NOT NULL CHECK(amount>0),currency TEXT NOT NULL DEFAULT 'usd' CHECK(currency='usd'),created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS products(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,amount INTEGER NOT NULL CHECK(amount>0),currency TEXT NOT NULL DEFAULT 'usd' CHECK(currency='usd'),created_at TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS product_versions(product_id TEXT NOT NULL,version INTEGER NOT NULL,name TEXT NOT NULL,description TEXT NOT NULL,amount INTEGER NOT NULL CHECK(amount>0),currency TEXT NOT NULL DEFAULT 'usd',created_at TEXT NOT NULL,updated_by TEXT NOT NULL,PRIMARY KEY(product_id,version));
 CREATE TABLE IF NOT EXISTS payments(id TEXT PRIMARY KEY,product_id TEXT NOT NULL REFERENCES products(id),product_name TEXT NOT NULL,customer TEXT NOT NULL,amount INTEGER NOT NULL CHECK(amount>0),refunded INTEGER NOT NULL DEFAULT 0 CHECK(refunded>=0 AND refunded<=amount),currency TEXT NOT NULL DEFAULT 'usd',status TEXT NOT NULL CHECK(status IN ('pending','succeeded','failed')),actor TEXT NOT NULL,created_at TEXT NOT NULL,checkout_token TEXT NOT NULL UNIQUE,sample INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS credentials(id TEXT PRIMARY KEY,name TEXT NOT NULL,kind TEXT NOT NULL,prefix TEXT NOT NULL,hash TEXT NOT NULL UNIQUE,scopes TEXT NOT NULL,max_amount INTEGER NOT NULL,refund_budget INTEGER NOT NULL,spent INTEGER NOT NULL DEFAULT 0,revoked INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS refunds(id TEXT PRIMARY KEY,payment_id TEXT NOT NULL REFERENCES payments(id),amount INTEGER NOT NULL CHECK(amount>0),reason TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL);
@@ -35,12 +36,22 @@ CREATE INDEX IF NOT EXISTS webhook_delivery_endpoint ON webhook_deliveries(endpo
 CREATE TABLE IF NOT EXISTS webhook_attempts(id TEXT PRIMARY KEY,delivery_id TEXT NOT NULL,attempt INTEGER NOT NULL,started_at TEXT NOT NULL,finished_at TEXT,http_status INTEGER,duration_ms INTEGER,error TEXT,response_excerpt TEXT NOT NULL DEFAULT '',UNIQUE(delivery_id,attempt));
 CREATE TABLE IF NOT EXISTS stripe_risk_signals(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,payment_id TEXT NOT NULL,mode TEXT NOT NULL CHECK(mode IN ('test','live')),account_id TEXT,kind TEXT NOT NULL CHECK(kind IN ('early_fraud_warning','review')),state TEXT NOT NULL,actionable INTEGER,fraud_type TEXT,reason TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,event_id TEXT NOT NULL UNIQUE);
 CREATE INDEX IF NOT EXISTS stripe_risk_scope ON stripe_risk_signals(tenant_id,mode,created_at,id);
+CREATE TABLE IF NOT EXISTS customers(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,name TEXT NOT NULL,email TEXT,email_normalized TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(tenant_id,email_normalized));
+CREATE TABLE IF NOT EXISTS quotes(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,customer_id TEXT NOT NULL REFERENCES customers(id),status TEXT NOT NULL CHECK(status IN ('open','accepted','expired','cancelled')),currency TEXT NOT NULL DEFAULT 'usd',subtotal_amount INTEGER NOT NULL,discount_amount INTEGER NOT NULL DEFAULT 0,total_amount INTEGER NOT NULL,expires_at TEXT NOT NULL,created_at TEXT NOT NULL,created_by TEXT NOT NULL,accepted_at TEXT,order_id TEXT,token_hash TEXT,token_ciphertext TEXT,creator_credential_id TEXT,amount_limit_snapshot INTEGER,provider_mode TEXT,FOREIGN KEY(order_id) REFERENCES orders(id));
+CREATE TABLE IF NOT EXISTS quote_items(id TEXT PRIMARY KEY,quote_id TEXT NOT NULL REFERENCES quotes(id),product_id TEXT NOT NULL,product_name TEXT NOT NULL,catalog_version INTEGER NOT NULL,quantity INTEGER NOT NULL CHECK(quantity>0),unit_amount INTEGER NOT NULL CHECK(unit_amount>0),line_total INTEGER NOT NULL CHECK(line_total>0),discount_amount INTEGER NOT NULL DEFAULT 0,net_total INTEGER NOT NULL DEFAULT 1 CHECK(net_total>=0));
+CREATE TABLE IF NOT EXISTS orders(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,quote_id TEXT UNIQUE REFERENCES quotes(id),customer_id TEXT NOT NULL REFERENCES customers(id),payment_id TEXT UNIQUE,status TEXT NOT NULL CHECK(status IN ('awaiting_payment','paid','cancelled')),currency TEXT NOT NULL DEFAULT 'usd',total_amount INTEGER NOT NULL,created_at TEXT NOT NULL,paid_at TEXT);
+CREATE TABLE IF NOT EXISTS order_items(id TEXT PRIMARY KEY,order_id TEXT NOT NULL REFERENCES orders(id),product_id TEXT NOT NULL,product_name TEXT NOT NULL,catalog_version INTEGER NOT NULL,quantity INTEGER NOT NULL CHECK(quantity>0),unit_amount INTEGER NOT NULL CHECK(unit_amount>0),line_total INTEGER NOT NULL CHECK(line_total>0),discount_amount INTEGER NOT NULL DEFAULT 0,net_total INTEGER NOT NULL DEFAULT 1 CHECK(net_total>=0));
+CREATE TABLE IF NOT EXISTS fulfillments(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,order_id TEXT NOT NULL UNIQUE REFERENCES orders(id),payment_id TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('awaiting_payment','ready','claimed','completed','failed')),claimed_by TEXT,claimed_at TEXT,completed_at TEXT,note TEXT,attempt_count INTEGER NOT NULL DEFAULT 0,cancelled_at TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS quote_tenant_created ON quotes(tenant_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS order_tenant_created ON orders(tenant_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS fulfillment_tenant_status ON fulfillments(tenant_id,status,created_at DESC);
 CREATE INDEX IF NOT EXISTS payment_created ON payments(created_at);
 CREATE INDEX IF NOT EXISTS event_created ON events(created_at);
 `;
 const migrations = [
  ['products','tenant_id',"TEXT NOT NULL DEFAULT 'owner'"],
  ['products','archived_at','TEXT'],
+ ['products','version','INTEGER NOT NULL DEFAULT 1'],
  ['payments','tenant_id',"TEXT NOT NULL DEFAULT 'owner'"],
  ['payments','archived_at','TEXT'],
  ['credentials','tenant_id',"TEXT NOT NULL DEFAULT 'owner'"],
@@ -59,6 +70,9 @@ const migrations = [
  ['refunds','provider_refund_id','TEXT'],
  ['refunds','provider_mode','TEXT'],
  ['refunds','credential_id','TEXT'],
+ ['quotes','token_hash','TEXT'], ['quotes','token_ciphertext','TEXT'], ['quotes','creator_credential_id','TEXT'], ['quotes','amount_limit_snapshot','INTEGER'], ['quotes','provider_mode','TEXT'],
+ ['quote_items','discount_amount','INTEGER NOT NULL DEFAULT 0'], ['quote_items','net_total','INTEGER NOT NULL DEFAULT 1'], ['order_items','discount_amount','INTEGER NOT NULL DEFAULT 0'], ['order_items','net_total','INTEGER NOT NULL DEFAULT 1'],
+ ['fulfillments','cancelled_at','TEXT'],
 ] as const;
 export const db = new Proxy({} as DatabaseSync, {
   get(_target, property) {
@@ -85,6 +99,8 @@ function getDatabase():DatabaseSync {
     }
     instance.exec("CREATE UNIQUE INDEX IF NOT EXISTS tenant_email_unique ON tenants(email COLLATE NOCASE);");
     instance.exec("CREATE UNIQUE INDEX IF NOT EXISTS merchant_email_unique ON merchant_users(email COLLATE NOCASE);");
+    instance.exec("INSERT OR IGNORE INTO product_versions(product_id,version,name,description,amount,currency,created_at,updated_by) SELECT id,version,name,description,amount,currency,created_at,'migration' FROM products;");
+    instance.exec("CREATE UNIQUE INDEX IF NOT EXISTS customer_email_unique ON customers(tenant_id,email_normalized) WHERE email_normalized IS NOT NULL;");
     instance.exec('COMMIT');
   } catch(error) {
     try { instance.exec('ROLLBACK'); } catch {}

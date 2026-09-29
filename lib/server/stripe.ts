@@ -5,6 +5,7 @@ export type StripeCheckoutInput={
  amount:number;
  currency:'usd';
  productName:string;
+ lineItems?:{name:string;amount:number}[];
  paymentId:string;
  tenantId:string;
  successUrl:string;
@@ -38,21 +39,20 @@ export async function testStripeApiKey(secretKey:string, mode:'test'|'live', fet
 export async function createStripeCheckout(secretKey:string,input:StripeCheckoutInput,fetcher:typeof fetch=fetch):Promise<StripeCheckout>{
  if(!/^(?:sk|rk)_(test|live)_[A-Za-z0-9]+$/.test(secretKey))throw stripeError(503,'provider_not_configured','A mode-matched Stripe API key is not configured.');
  if(!Number.isSafeInteger(input.amount)||input.amount<1||input.amount>10_000_000)throw stripeError(422,'invalid_amount','The payment amount is outside the supported range.');
+ const lineItems=input.lineItems?.length?input.lineItems:[{name:input.productName,amount:input.amount}];
+ if(lineItems.some(item=>!item.name.trim()||!Number.isSafeInteger(item.amount)||item.amount<1)||lineItems.reduce((sum,item)=>sum+item.amount,0)!==input.amount)throw stripeError(422,'invalid_line_items','Checkout line items must be positive and add up to the payment total.');
  const fields=new URLSearchParams({
   mode:'payment',
   'payment_method_types[0]':'card',
   success_url:input.successUrl,
   cancel_url:input.cancelUrl,
   client_reference_id:input.paymentId,
-  'line_items[0][price_data][currency]':input.currency,
-  'line_items[0][price_data][unit_amount]':String(input.amount),
-  'line_items[0][price_data][product_data][name]':input.productName.slice(0,120),
-  'line_items[0][quantity]':'1',
   'metadata[agora_payment_id]':input.paymentId,
   'metadata[agora_tenant_id]':input.tenantId,
   'payment_intent_data[metadata][agora_payment_id]':input.paymentId,
   'payment_intent_data[metadata][agora_tenant_id]':input.tenantId,
  });
+ lineItems.forEach((item,index)=>{fields.set(`line_items[${index}][price_data][currency]`,input.currency);fields.set(`line_items[${index}][price_data][unit_amount]`,String(item.amount));fields.set(`line_items[${index}][price_data][product_data][name]`,item.name.slice(0,120));fields.set(`line_items[${index}][quantity]`,'1');});
  let response:Response;
  const headers:Record<string,string>={Authorization:`Bearer ${secretKey}`,'Content-Type':'application/x-www-form-urlencoded','Idempotency-Key':input.idempotencyKey};if(input.stripeAccountId)headers['Stripe-Account']=input.stripeAccountId;
  try{response=await fetcher('https://api.stripe.com/v1/checkout/sessions',{method:'POST',headers,body:fields,signal:AbortSignal.timeout(15_000)});}

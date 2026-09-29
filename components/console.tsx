@@ -51,7 +51,6 @@ import {
 } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
@@ -73,6 +72,7 @@ import { InstallationPanel } from "@/components/installation-panel"
 import { OutgoingWebhooks } from "@/components/outgoing-webhooks"
 import { RiskSignals } from "@/components/risk-signals"
 import { PasswordChangeForm } from "@/components/password-change-form"
+import { ProductEditor } from "@/components/product-editor"
 const money = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
     n / 100
@@ -85,29 +85,110 @@ const date = (s: string) =>
   })
 const activityLabel = (value: string, bucketSeconds?: number | null) => {
   const parsed = new Date(value)
-  if (bucketSeconds !== null && bucketSeconds !== undefined && bucketSeconds <= 3600) {
-    return parsed.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "UTC" })
+  if (
+    bucketSeconds !== null &&
+    bucketSeconds !== undefined &&
+    bucketSeconds <= 3600
+  ) {
+    return parsed.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: "UTC",
+    })
   }
-  if (bucketSeconds === null) return parsed.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" })
-  return parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })
+  if (bucketSeconds === null)
+    return parsed.toLocaleDateString("en-US", {
+      month: "short",
+      year: "numeric",
+      timeZone: "UTC",
+    })
+  return parsed.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  })
 }
-const activityAccessibleLabel = (value: string, bucketSeconds?: number | null) => {
+const activityAccessibleLabel = (
+  value: string,
+  bucketSeconds?: number | null
+) => {
   const parsed = new Date(value)
-  return bucketSeconds !== null && bucketSeconds !== undefined && bucketSeconds <= 3600
-    ? parsed.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" })
+  return bucketSeconds !== null &&
+    bucketSeconds !== undefined &&
+    bucketSeconds <= 3600
+    ? parsed.toLocaleString("en-US", {
+        dateStyle: "medium",
+        timeStyle: "short",
+        timeZone: "UTC",
+      })
     : bucketSeconds === null
-      ? parsed.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" })
-      : parsed.toLocaleDateString("en-US", { dateStyle: "long", timeZone: "UTC" })
+      ? parsed.toLocaleDateString("en-US", {
+          month: "long",
+          year: "numeric",
+          timeZone: "UTC",
+        })
+      : parsed.toLocaleDateString("en-US", {
+          dateStyle: "long",
+          timeZone: "UTC",
+        })
 }
 const views = [
   "Overview",
   "Payments",
   "Catalog",
+  "Orders",
   "Agents",
   "Developers",
   "Settings",
 ] as const
 type View = (typeof views)[number]
+type SalesQuote = {
+  id: string
+  status: string
+  customer_name?: string
+  customer_email?: string | null
+  expires_at: string
+  subtotal_amount: number
+  discount_amount: number
+  total_amount: number
+  currency: string
+  items: Array<{
+    product_name: string
+    quantity: number
+    unit_amount: number
+    line_total: number
+    catalog_version?: number
+  }>
+  order_id?: string | null
+  checkout_url?: string | null
+  quote_url?: string | null
+  quote_link_available?: boolean
+  created_at: string
+}
+type SalesOrder = {
+  id: string
+  quote_id?: string
+  payment_id?: string
+  customer_id?: string
+  customer_name: string
+  customer_email?: string | null
+  status: string
+  total_amount: number
+  payment_status?: "pending" | "paid" | "partially_refunded" | "refunded" | "failed"
+  refunded_amount?: number
+  net_amount?: number
+  currency: string
+  created_at: string
+  fulfillment_status?: string
+}
+type SalesCustomer = {
+  id: string
+  name: string
+  email?: string | null
+  order_count: number
+  total_paid: number
+  created_at: string
+}
 type CreatedPayment = Omit<Payment, "checkout_token"> & {
   checkout_url?: string
   provider?: "sandbox" | "stripe"
@@ -124,21 +205,44 @@ type ApiResponse = {
   [key: string]: unknown
 }
 type ApiDiagnostic = { status: number; requestId?: string; storage?: string }
-type ActivityRange = "1h" | "24h" | "7d" | "30d" | "90d" | "1y" | "all" | "custom"
-type OverviewActivity = Snapshot["activity"] & { range?: ActivityRange; bucket_seconds?: number | null }
+type ActivityRange =
+  "1h" | "24h" | "7d" | "30d" | "90d" | "1y" | "all" | "custom"
+type OverviewActivity = Snapshot["activity"] & {
+  range?: ActivityRange
+  bucket_seconds?: number | null
+}
 const parseApiResponse = (raw: string): ApiResponse => {
   const value: unknown = JSON.parse(raw)
   return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as ApiResponse
+    ? (value as ApiResponse)
     : {}
 }
 const isProviderMode = (value: unknown): value is "test" | "live" =>
   value === "test" || value === "live"
-const isProviderStatus = (value: unknown): value is MerchantProvider["status"] =>
-  value === "not_connected" || value === "charges_pending" || value === "connected" || value === "disconnected"
-const icons = [Home03Icon, CreditCardIcon, PackageIcon, AiBrain01Icon, CodeIcon, Settings05Icon]
+const isProviderStatus = (
+  value: unknown
+): value is MerchantProvider["status"] =>
+  value === "not_connected" ||
+  value === "charges_pending" ||
+  value === "connected" ||
+  value === "disconnected"
+const icons = [
+  Home03Icon,
+  CreditCardIcon,
+  PackageIcon,
+  CreditCardIcon,
+  AiBrain01Icon,
+  CodeIcon,
+  Settings05Icon,
+]
 const keyModeLabel = (mode?: "sandbox" | "test" | "live") =>
-  mode === "test" ? "Agora test mode" : mode === "live" ? "Agora live mode" : mode === "sandbox" ? "Agora sandbox" : "Mode unavailable"
+  mode === "test"
+    ? "Agora test mode"
+    : mode === "live"
+      ? "Agora live mode"
+      : mode === "sandbox"
+        ? "Agora sandbox"
+        : "Mode unavailable"
 const workspaceKeyModeLabel = (data: Snapshot | null) =>
   data?.provider_status === "setup_required"
     ? keyModeLabel(data.provider_mode)
@@ -163,15 +267,30 @@ export default function Console() {
   const pendingWrites = useRef(new Map<string, string>())
   const [view, setView] = useState<View>("Overview")
   const [data, setData] = useState<Snapshot | null>(null)
-  const [deploymentType, setDeploymentType] = useState<"community" | "hosted" | null>(null)
+  const [deploymentType, setDeploymentType] = useState<
+    "community" | "hosted" | null
+  >(null)
   const [activityRange, setActivityRange] = useState<ActivityRange>("30d")
-  const [customStart, setCustomStart] = useState(() => new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10))
-  const [customEnd, setCustomEnd] = useState(() => new Date().toISOString().slice(0, 10))
-  const [activityData, setActivityData] = useState<OverviewActivity | null>(null)
+  const [customStart, setCustomStart] = useState(() =>
+    new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10)
+  )
+  const [customEnd, setCustomEnd] = useState(() =>
+    new Date().toISOString().slice(0, 10)
+  )
+  const [activityData, setActivityData] = useState<OverviewActivity | null>(
+    null
+  )
   const [activityError, setActivityError] = useState("")
   const [error, setError] = useState("")
   const [authState, setAuthState] = useState<
-    "checking" | "setup" | "signed-out" | "enroll" | "verify" | "recovery" | "pending" | "signed-in"
+    | "checking"
+    | "setup"
+    | "signed-out"
+    | "enroll"
+    | "verify"
+    | "recovery"
+    | "pending"
+    | "signed-in"
   >("checking")
   const [authPassword, setAuthPassword] = useState("")
   const [authEmail, setAuthEmail] = useState("")
@@ -185,24 +304,40 @@ export default function Console() {
   const [authTenantId, setAuthTenantId] = useState("")
   const [authError, setAuthError] = useState("")
   const [authNotice, setAuthNotice] = useState("")
-  const [authErrorDetails, setAuthErrorDetails] = useState<ApiDiagnostic | null>(null)
+  const [authErrorDetails, setAuthErrorDetails] =
+    useState<ApiDiagnostic | null>(null)
   const [authBusy, setAuthBusy] = useState(false)
   const [mfaSecret, setMfaSecret] = useState("")
   const [mfaUri, setMfaUri] = useState("")
-  const [mfaQrData, setMfaQrData] = useState<{ uri: string; data: string } | null>(null)
+  const [mfaQrData, setMfaQrData] = useState<{
+    uri: string
+    data: string
+  } | null>(null)
   const [mfaCode, setMfaCode] = useState("")
   const [useRecoveryCode, setUseRecoveryCode] = useState(false)
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([])
   const recoveryPending = useRef(false)
-  const [dialog, setDialog] = useState<"payment" | "product" | "key" | null>(
-    null
-  )
+  const [dialog, setDialog] = useState<
+    "payment" | "product" | "quote" | "key" | null
+  >(null)
   const [selected, setSelected] = useState<Payment | null>(null)
   const [filter, setFilter] = useState("all")
   const [showArchived, setShowArchived] = useState(false)
   const [query, setQuery] = useState("")
   const [busy, setBusy] = useState(false)
   const [product, setProduct] = useState("")
+  const [editingProduct, setEditingProduct] = useState<
+    (Snapshot["products"][number] & { version?: number }) | null
+  >(null)
+  const [salesBusy, setSalesBusy] = useState(false)
+  const [salesError, setSalesError] = useState("")
+  const [selectedQuote, setSelectedQuote] = useState<SalesQuote | null>(null)
+  const [quoteLines, setQuoteLines] = useState<
+    Array<{ product_id: string; quantity: number }>
+  >([])
+  const [salesTab, setSalesTab] = useState<"orders" | "quotes" | "customers">(
+    "orders"
+  )
   const [created, setCreated] = useState<CreatedPayment | null>(null)
   const [secret, setSecret] = useState("")
   const [keyKind, setKeyKind] = useState("agent")
@@ -219,7 +354,8 @@ export default function Console() {
     expires_at: string
   } | null>(null)
   const [inviteBusyTenant, setInviteBusyTenant] = useState("")
-  const [merchantProvider, setMerchantProvider] = useState<MerchantProvider | null>(null)
+  const [merchantProvider, setMerchantProvider] =
+    useState<MerchantProvider | null>(null)
   const [merchantProviderError, setMerchantProviderError] = useState("")
   const [providerRefresh, setProviderRefresh] = useState(0)
   const [permission, setPermission] =
@@ -231,11 +367,18 @@ export default function Console() {
   const mobileNavTrigger = useRef<HTMLButtonElement | null>(null)
   const mobileNavWasOpen = useRef(false)
   const [providerBusyTenant, setProviderBusyTenant] = useState("")
-  function setApiAuthError(response: Response, body: ApiResponse, fallback: string) {
+  function setApiAuthError(
+    response: Response,
+    body: ApiResponse,
+    fallback: string
+  ) {
     setAuthError(body.error?.message || fallback)
     setAuthErrorDetails({
       status: response.status,
-      requestId: body.error?.request_id || response.headers.get("X-Request-Id") || undefined,
+      requestId:
+        body.error?.request_id ||
+        response.headers.get("X-Request-Id") ||
+        undefined,
       storage: response.headers.get("X-Agora-Storage") || undefined,
     })
   }
@@ -248,16 +391,24 @@ export default function Console() {
           <details>
             <summary>Technical details</summary>
             <p>HTTP {authErrorDetails.status}</p>
-            {authErrorDetails.requestId && <p>Reference: {authErrorDetails.requestId}</p>}
-            {authErrorDetails.storage && <p>Storage: {authErrorDetails.storage}</p>}
+            {authErrorDetails.requestId && (
+              <p>Reference: {authErrorDetails.requestId}</p>
+            )}
+            {authErrorDetails.storage && (
+              <p>Storage: {authErrorDetails.storage}</p>
+            )}
           </details>
         )}
       </div>
     )
   }
-  const load = useCallback(async (includeArchived = showArchived) => {
+  const load = useCallback(
+    async (includeArchived = showArchived) => {
     try {
-      const r = await fetch(`/api/console${includeArchived ? "?include_archived=1" : ""}`, { cache: "no-store" })
+        const r = await fetch(
+          `/api/console${includeArchived ? "?include_archived=1" : ""}`,
+          { cache: "no-store" }
+        )
       const raw = await r.text()
       let b: ApiResponse
       try {
@@ -274,7 +425,8 @@ export default function Console() {
         throw new Error(b.error?.message || "Unable to load workspace.")
       }
       setData(b as unknown as Snapshot)
-      if (b.deployment_type === "community" || b.deployment_type === "hosted") setDeploymentType(b.deployment_type)
+        if (b.deployment_type === "community" || b.deployment_type === "hosted")
+          setDeploymentType(b.deployment_type)
       setError("")
     } catch (e) {
       setError(
@@ -285,12 +437,23 @@ export default function Console() {
             : "Unable to load workspace."
       )
     }
-  }, [showArchived])
+    },
+    [showArchived]
+  )
   const checkSession = useCallback(async () => {
     if (recoveryPending.current) return
     try {
       const response = await fetch("/api/auth/session", { cache: "no-store" })
-      const body = await response.json() as ApiResponse & { role?: string; tenant_id?: string; access_status?: string; mfa_stage?: string; authenticated?: boolean; password_change_required?: boolean; owner_setup_required?: boolean; owner_setup_expired?: boolean }
+      const body = (await response.json()) as ApiResponse & {
+        role?: string
+        tenant_id?: string
+        access_status?: string
+        mfa_stage?: string
+        authenticated?: boolean
+        password_change_required?: boolean
+        owner_setup_required?: boolean
+        owner_setup_expired?: boolean
+      }
       if (!response.ok)
         throw new Error(
           body.error?.message || "Unable to verify account access."
@@ -319,7 +482,11 @@ export default function Console() {
         setAuthState("verify")
         return
       }
-      if (!body.authenticated || body.access_status !== "approved" || body.mfa_stage !== "complete") {
+      if (
+        !body.authenticated ||
+        body.access_status !== "approved" ||
+        body.mfa_stage !== "complete"
+      ) {
         setData(null)
         setAuthState("signed-out")
         return
@@ -340,11 +507,21 @@ export default function Console() {
     let active = true
     if (mfaUri) {
       // Render the provisioning URI locally. It is never sent to a QR service.
-      void QRCode.toDataURL(mfaUri, { width: 220, margin: 2, errorCorrectionLevel: "M" })
-        .then((dataUrl) => { if (active) setMfaQrData({ uri: mfaUri, data: dataUrl }) })
-        .catch(() => { if (active) setMfaQrData(null) })
+      void QRCode.toDataURL(mfaUri, {
+        width: 220,
+        margin: 2,
+        errorCorrectionLevel: "M",
+      })
+        .then((dataUrl) => {
+          if (active) setMfaQrData({ uri: mfaUri, data: dataUrl })
+        })
+        .catch(() => {
+          if (active) setMfaQrData(null)
+        })
     }
-    return () => { active = false }
+    return () => {
+      active = false
+    }
   }, [mfaUri])
   useEffect(() => {
     setSidebarCollapsed(
@@ -370,11 +547,20 @@ export default function Console() {
     const controller = new AbortController()
     void (async () => {
       try {
-        const response = await fetch("/api/health", { cache: "no-store", signal: controller.signal })
+        const response = await fetch("/api/health", {
+          cache: "no-store",
+          signal: controller.signal,
+        })
         if (!response.ok) return
-        const body = await response.json() as { deployment_type?: unknown }
-        if (body.deployment_type === "community" || body.deployment_type === "hosted") setDeploymentType(body.deployment_type)
-      } catch { /* Login remains available when deployment metadata is unavailable. */ }
+        const body = (await response.json()) as { deployment_type?: unknown }
+        if (
+          body.deployment_type === "community" ||
+          body.deployment_type === "hosted"
+        )
+          setDeploymentType(body.deployment_type)
+      } catch {
+        /* Login remains available when deployment metadata is unavailable. */
+      }
     })()
     return () => controller.abort()
   }, [])
@@ -384,7 +570,11 @@ export default function Console() {
     if (token) {
       setSetupToken(token)
       setSetupTokenFromFragment(true)
-      history.replaceState(history.state, "", `${location.pathname}${location.search}`)
+      history.replaceState(
+        history.state,
+        "",
+        `${location.pathname}${location.search}`
+      )
     }
   }, [])
   useEffect(() => {
@@ -407,16 +597,30 @@ export default function Console() {
     if (activityRange === "custom" && (!customStart || !customEnd)) return
     const controller = new AbortController()
     const params = new URLSearchParams({ range: activityRange })
-    if (activityRange === "custom") { params.set("from", customStart); params.set("to", customEnd) }
+    if (activityRange === "custom") {
+      params.set("from", customStart)
+      params.set("to", customEnd)
+    }
     void (async () => {
       try {
-        const response = await fetch(`/api/console/activity?${params}`, { cache: "no-store", signal: controller.signal })
-        const body = await response.json() as OverviewActivity & ApiResponse
-        if (!response.ok) throw new Error(body.error?.message || "Activity could not be loaded.")
+        const response = await fetch(`/api/console/activity?${params}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        })
+        const body = (await response.json()) as OverviewActivity & ApiResponse
+        if (!response.ok)
+          throw new Error(
+            body.error?.message || "Activity could not be loaded."
+          )
         setActivityData(body)
         setActivityError("")
       } catch (reason) {
-        if (!controller.signal.aborted) setActivityError(reason instanceof Error ? reason.message : "Activity could not be loaded.")
+        if (!controller.signal.aborted)
+          setActivityError(
+            reason instanceof Error
+              ? reason.message
+              : "Activity could not be loaded."
+          )
       }
     })()
     return () => controller.abort()
@@ -440,9 +644,20 @@ export default function Console() {
       const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: authEmail.trim(), password: authPassword }),
+        body: JSON.stringify({
+          email: authEmail.trim(),
+          password: authPassword,
+        }),
       })
-      const body = await response.json() as ApiResponse & { role?: string; tenant_id?: string; stage?: string; secret?: string; otpauth_url?: string; authenticated?: boolean; access_status?: string }
+      const body = (await response.json()) as ApiResponse & {
+        role?: string
+        tenant_id?: string
+        stage?: string
+        secret?: string
+        otpauth_url?: string
+        authenticated?: boolean
+        access_status?: string
+      }
       if (!response.ok) {
         setApiAuthError(response, body, "Sign-in failed.")
         return
@@ -484,7 +699,9 @@ export default function Console() {
       return
     }
     if (!setupToken) {
-      setAuthError("Open the one-time setup link from your installer, then try again.")
+      setAuthError(
+        "Open the one-time setup link from your installer, then try again."
+      )
       setAuthBusy(false)
       return
     }
@@ -492,27 +709,44 @@ export default function Console() {
       const response = await fetch("/api/auth/setup/claim", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: setupToken, email: authEmail.trim(), password: setupPassword }),
+        body: JSON.stringify({
+          token: setupToken,
+          email: authEmail.trim(),
+          password: setupPassword,
+        }),
       })
-      const body = await response.json() as ApiResponse & { stage?: string; email?: string; secret?: string; otpauth_url?: string }
+      const body = (await response.json()) as ApiResponse & {
+        stage?: string
+        email?: string
+        secret?: string
+        otpauth_url?: string
+      }
       if (!response.ok) {
         setApiAuthError(response, body, "Owner setup could not be completed.")
         return
       }
       if (body.stage !== "enroll" || !body.secret || !body.otpauth_url) {
-        throw new Error("Setup response did not include the authenticator step. Contact your installer administrator.")
+        throw new Error(
+          "Setup response did not include the authenticator step. Contact your installer administrator."
+        )
       }
       setSetupToken("")
       setSetupPassword("")
       setSetupPasswordConfirm("")
-      setAuthEmail(typeof body.email === "string" ? body.email : authEmail.trim())
+      setAuthEmail(
+        typeof body.email === "string" ? body.email : authEmail.trim()
+      )
       setAuthRole("owner")
       setAuthTenantId("")
       setMfaSecret(body.secret)
       setMfaUri(body.otpauth_url)
       setAuthState("enroll")
     } catch (reason) {
-      setAuthError(reason instanceof Error ? reason.message : "Owner setup could not be completed.")
+      setAuthError(
+        reason instanceof Error
+          ? reason.message
+          : "Owner setup could not be completed."
+      )
     } finally {
       setAuthBusy(false)
     }
@@ -526,8 +760,12 @@ export default function Console() {
       const enrolling = authState === "enroll"
       const response = await fetch(
         enrolling
-          ? authRole === "merchant" ? "/api/auth/merchant/mfa/enroll" : "/api/auth/mfa/enroll"
-          : authRole === "merchant" ? "/api/auth/merchant/mfa/verify" : "/api/auth/mfa/verify",
+          ? authRole === "merchant"
+            ? "/api/auth/merchant/mfa/enroll"
+            : "/api/auth/mfa/enroll"
+          : authRole === "merchant"
+            ? "/api/auth/merchant/mfa/verify"
+            : "/api/auth/mfa/verify",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -540,7 +778,9 @@ export default function Console() {
           ),
         }
       )
-      const body = await response.json() as ApiResponse & { recovery_codes?: unknown }
+      const body = (await response.json()) as ApiResponse & {
+        recovery_codes?: unknown
+      }
       if (!response.ok) {
         setApiAuthError(response, body, "Code was not accepted.")
         return
@@ -548,9 +788,12 @@ export default function Console() {
       setMfaCode("")
       if (enrolling) {
         const codes = Array.isArray(body.recovery_codes)
-          ? body.recovery_codes.filter((code): code is string => typeof code === "string")
+          ? body.recovery_codes.filter(
+              (code): code is string => typeof code === "string"
+            )
           : []
-        if (!codes.length) throw new Error("Recovery codes were not returned. Contact support.")
+        if (!codes.length)
+          throw new Error("Recovery codes were not returned. Contact support.")
         setMfaSecret("")
         setMfaUri("")
         recoveryPending.current = true
@@ -560,7 +803,9 @@ export default function Console() {
         await checkSession()
       }
     } catch (reason) {
-      setAuthError(reason instanceof Error ? reason.message : "Code was not accepted.")
+      setAuthError(
+        reason instanceof Error ? reason.message : "Code was not accepted."
+      )
     } finally {
       setAuthBusy(false)
     }
@@ -574,14 +819,16 @@ export default function Console() {
     setPasswordChangeRequired(false)
     setData(null)
     setAuthError("")
-    setAuthNotice("Password updated. Sign in with your new password to continue.")
+    setAuthNotice(
+      "Password updated. Sign in with your new password to continue."
+    )
     setAuthState("signed-out")
   }
   async function logout() {
     setAuthBusy(true)
     try {
       const response = await fetch("/api/auth/logout", { method: "POST" })
-      const body = await response.json() as ApiResponse
+      const body = (await response.json()) as ApiResponse
       if (!response.ok)
         throw new Error(body.error?.message || "Sign-out failed.")
       setData(null)
@@ -599,7 +846,10 @@ export default function Console() {
       setAuthBusy(false)
     }
   }
-  async function action<T = ApiResponse>(action: string, payload: unknown): Promise<T> {
+  async function action<T = ApiResponse>(
+    action: string,
+    payload: unknown
+  ): Promise<T> {
     const fingerprint = JSON.stringify({ action, payload })
     const key = pendingWrites.current.get(fingerprint) || crypto.randomUUID()
     pendingWrites.current.set(fingerprint, key)
@@ -633,22 +883,120 @@ export default function Console() {
     await load()
     return b as unknown as T
   }
-  async function setArchivedRecord(kind: "products" | "payments", id: string, archived: boolean) {
-    if (archived && !window.confirm("Archive this record? It will be hidden from the default list. Its ledger, refunds, and event history remain unchanged.")) return
+  async function setArchivedRecord(
+    kind: "products" | "payments",
+    id: string,
+    archived: boolean
+  ) {
+    if (
+      archived &&
+      !window.confirm(
+        "Archive this record? It will be hidden from the default list. Its ledger, refunds, and event history remain unchanged."
+      )
+    )
+      return
     setBusy(true)
     try {
-      const response = await fetch(`/api/console/${kind}/${encodeURIComponent(id)}`, {
+      const response = await fetch(
+        `/api/console/${kind}/${encodeURIComponent(id)}`,
+        {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ archived }),
-      })
-      const body = await response.json() as ApiResponse
-      if (!response.ok) throw new Error(body.error?.message || "The record could not be updated.")
-      toast.success(archived ? "Record archived. Financial history is unchanged." : "Record restored.")
+        }
+      )
+      const body = (await response.json()) as ApiResponse
+      if (!response.ok)
+        throw new Error(
+          body.error?.message || "The record could not be updated."
+        )
+      toast.success(
+        archived
+          ? "Record archived. Financial history is unchanged."
+          : "Record restored."
+      )
       await load(showArchived)
     } catch (reason) {
-      toast.error(reason instanceof Error ? reason.message : "The record could not be updated.")
-    } finally { setBusy(false) }
+      toast.error(
+        reason instanceof Error
+          ? reason.message
+          : "The record could not be updated."
+      )
+    } finally {
+      setBusy(false)
+    }
+  }
+  const salesData = data as
+    | (Omit<Snapshot, "quotes" | "orders" | "customers" | "fulfillments"> & {
+        quotes?: SalesQuote[]
+        orders?: SalesOrder[]
+        customers?: SalesCustomer[]
+        fulfillments?: Array<{
+          id: string
+          order_id: string
+          status: string
+          claimed_by?: string | null
+        }>
+      })
+    | null
+  const salesQuotes = salesData?.quotes || []
+  const salesOrders = salesData?.orders || []
+  const salesCustomers = salesData?.customers || []
+  const fulfillments = salesData?.fulfillments || []
+  async function createQuote(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    setSalesBusy(true)
+    setSalesError("")
+    try {
+      const quote = await action<SalesQuote>("create_quote", {
+        customer: {
+          name: String(form.get("customer_name") || "").trim(),
+          email: String(form.get("customer_email") || "").trim() || undefined,
+        },
+        items: quoteLines,
+        expires_at: new Date(
+          Date.now() + Number(form.get("expires_in_seconds")) * 1000
+        ).toISOString(),
+        discount_amount: Math.round(
+          Number(form.get("discount_amount") || 0) * 100
+        ),
+      })
+      setSelectedQuote(quote)
+      setDialog(null)
+      setQuoteLines([])
+      toast.success("Quote created")
+    } catch (reason) {
+      setSalesError(
+        reason instanceof Error ? reason.message : "Quote could not be created."
+      )
+    } finally {
+      setSalesBusy(false)
+    }
+  }
+  async function updateFulfillment(
+    actionName: "claim_fulfillment" | "complete_fulfillment" | "fail_fulfillment" | "retry_fulfillment",
+    fulfillment_id: string
+  ) {
+    setSalesBusy(true)
+    setSalesError("")
+    try {
+      await action(actionName, { id: fulfillment_id })
+      toast.success({
+        claim_fulfillment: "Fulfillment claimed",
+        complete_fulfillment: "Fulfillment marked complete",
+        fail_fulfillment: "Fulfillment marked failed",
+        retry_fulfillment: "Fulfillment returned to ready",
+      }[actionName])
+    } catch (reason) {
+      setSalesError(
+        reason instanceof Error
+          ? reason.message
+          : "Fulfillment could not be updated."
+      )
+    } finally {
+      setSalesBusy(false)
+    }
   }
   function toggleArchivedView() {
     const next = !showArchived
@@ -669,49 +1017,88 @@ export default function Console() {
   async function connectTenant(tenantId: string) {
     setProviderBusyTenant(tenantId)
     try {
-      const response = await fetch(`/api/merchants/${encodeURIComponent(tenantId)}/stripe/connect`, {
+      const response = await fetch(
+        `/api/merchants/${encodeURIComponent(tenantId)}/stripe/connect`,
+        {
         method: "POST",
         cache: "no-store",
-      })
+        }
+      )
       const raw = await response.text()
       let body: ApiResponse & { authorize_url?: string }
       try {
         body = parseApiResponse(raw)
       } catch {
-        throw new Error(`Provider API returned ${response.status}. Please retry.`)
+        throw new Error(
+          `Provider API returned ${response.status}. Please retry.`
+        )
       }
-      if (!response.ok) throw new Error(body.error?.message || "Stripe connection could not be started.")
+      if (!response.ok)
+        throw new Error(
+          body.error?.message || "Stripe connection could not be started."
+        )
       const authorize = new URL(body.authorize_url || "")
-      if (authorize.protocol !== "https:" || authorize.hostname !== "connect.stripe.com") {
-        throw new Error("The provider returned an unexpected authorization URL. Contact support.")
+      if (
+        authorize.protocol !== "https:" ||
+        authorize.hostname !== "connect.stripe.com"
+      ) {
+        throw new Error(
+          "The provider returned an unexpected authorization URL. Contact support."
+        )
       }
       window.location.assign(authorize.toString())
     } catch (reason) {
-      toast.error(reason instanceof Error ? reason.message : "Stripe connection could not be started.")
+      toast.error(
+        reason instanceof Error
+          ? reason.message
+          : "Stripe connection could not be started."
+      )
       setProviderBusyTenant("")
     }
   }
-  async function disconnectTenant(tenantId: string, businessName = "this merchant") {
-    if (!window.confirm(`Disconnect Stripe from ${businessName}? This revokes its API keys and stops new payments.`)) return
+  async function disconnectTenant(
+    tenantId: string,
+    businessName = "this merchant"
+  ) {
+    if (
+      !window.confirm(
+        `Disconnect Stripe from ${businessName}? This revokes its API keys and stops new payments.`
+      )
+    )
+      return
     setProviderBusyTenant(tenantId)
     try {
-      const response = await fetch(`/api/merchants/${encodeURIComponent(tenantId)}/stripe/connect`, {
+      const response = await fetch(
+        `/api/merchants/${encodeURIComponent(tenantId)}/stripe/connect`,
+        {
         method: "DELETE",
         cache: "no-store",
-      })
+        }
+      )
       const raw = await response.text()
       let body: ApiResponse
       try {
         body = parseApiResponse(raw)
       } catch {
-        throw new Error(`Provider API returned ${response.status}. Please retry.`)
+        throw new Error(
+          `Provider API returned ${response.status}. Please retry.`
+        )
       }
-      if (!response.ok) throw new Error(body.error?.message || "Stripe could not be disconnected.")
-      toast.success("Stripe disconnected. New payments are disabled and tenant API keys were revoked.")
+      if (!response.ok)
+        throw new Error(
+          body.error?.message || "Stripe could not be disconnected."
+        )
+      toast.success(
+        "Stripe disconnected. New payments are disabled and tenant API keys were revoked."
+      )
       await load()
       setProviderRefresh((current) => current + 1)
     } catch (reason) {
-      toast.error(reason instanceof Error ? reason.message : "Stripe could not be disconnected.")
+      toast.error(
+        reason instanceof Error
+          ? reason.message
+          : "Stripe could not be disconnected."
+      )
     } finally {
       setProviderBusyTenant("")
     }
@@ -725,19 +1112,48 @@ export default function Console() {
     let active = true
     setMerchantProvider(null)
     setMerchantProviderError("")
-    fetch(`/api/merchants/${encodeURIComponent(authTenantId)}/stripe/connect`, { cache: "no-store" })
+    fetch(`/api/merchants/${encodeURIComponent(authTenantId)}/stripe/connect`, {
+      cache: "no-store",
+    })
       .then(async (response) => {
-        const body = await response.json() as ApiResponse & { mode?: unknown; status?: unknown; charges_enabled?: unknown; provider?: unknown }
-        if (!response.ok) throw new Error(body.error?.message || "Unable to load Stripe connection status.")
-        if (body.provider !== "stripe" || !isProviderMode(body.mode) || !isProviderStatus(body.status)) {
-          throw new Error("The Stripe connection status response was incomplete.")
+        const body = (await response.json()) as ApiResponse & {
+          mode?: unknown
+          status?: unknown
+          charges_enabled?: unknown
+          provider?: unknown
         }
-        if (active) setMerchantProvider({ provider: "stripe", mode: body.mode, status: body.status, charges_enabled: body.charges_enabled === true })
+        if (!response.ok)
+          throw new Error(
+            body.error?.message || "Unable to load Stripe connection status."
+          )
+        if (
+          body.provider !== "stripe" ||
+          !isProviderMode(body.mode) ||
+          !isProviderStatus(body.status)
+        ) {
+          throw new Error(
+            "The Stripe connection status response was incomplete."
+          )
+        }
+        if (active)
+          setMerchantProvider({
+            provider: "stripe",
+            mode: body.mode,
+            status: body.status,
+            charges_enabled: body.charges_enabled === true,
+          })
       })
       .catch((reason) => {
-        if (active) setMerchantProviderError(reason instanceof Error ? reason.message : "Unable to load Stripe connection status.")
+        if (active)
+          setMerchantProviderError(
+            reason instanceof Error
+              ? reason.message
+              : "Unable to load Stripe connection status."
+          )
       })
-    return () => { active = false }
+    return () => {
+      active = false
+    }
   }, [authRole, authState, authTenantId, providerRefresh])
   useEffect(() => {
     const url = new URL(window.location.href)
@@ -746,9 +1162,13 @@ export default function Console() {
     url.searchParams.delete("stripe_connect")
     window.history.replaceState(null, "", `${url.pathname}${url.search}`)
     if (result === "connected") {
-      toast.success("Stripe connection saved. Payment eligibility is checked when you create a payment.")
+      toast.success(
+        "Stripe connection saved. Payment eligibility is checked when you create a payment."
+      )
     } else {
-      toast.error("Stripe connection was not completed. You can try again from this page.")
+      toast.error(
+        "Stripe connection was not completed. You can try again from this page."
+      )
     }
     setProviderRefresh((current) => current + 1)
     void load()
@@ -756,18 +1176,28 @@ export default function Console() {
   async function inviteMerchant(registration: Registration) {
     setInviteBusyTenant(registration.tenant_id)
     try {
-      const result = await action("create_invite", { tenant_id: registration.tenant_id })
-      if (typeof result.invite_url !== "string" || typeof result.expires_at !== "string") {
+      const result = await action("create_invite", {
+        tenant_id: registration.tenant_id,
+      })
+      if (
+        typeof result.invite_url !== "string" ||
+        typeof result.expires_at !== "string"
+      ) {
         throw new Error("The invite response was incomplete. Please retry.")
       }
       setMerchantInvite({
         business_name: registration.business_name,
-        email: typeof result.email === "string" ? result.email : registration.email,
+        email:
+          typeof result.email === "string" ? result.email : registration.email,
         invite_url: result.invite_url,
         expires_at: result.expires_at,
       })
     } catch (reason) {
-      toast.error(reason instanceof Error ? reason.message : "Merchant invite could not be created.")
+      toast.error(
+        reason instanceof Error
+          ? reason.message
+          : "Merchant invite could not be created."
+      )
     } finally {
       setInviteBusyTenant("")
     }
@@ -781,7 +1211,10 @@ export default function Console() {
     }
   }
   const downloadRecoveryCodes = () => {
-    const blob = new Blob([`Agora recovery codes\n\n${recoveryCodes.join("\n")}\n`], { type: "text/plain" })
+    const blob = new Blob(
+      [`Agora recovery codes\n\n${recoveryCodes.join("\n")}\n`],
+      { type: "text/plain" }
+    )
     const url = URL.createObjectURL(blob)
     const link = document.createElement("a")
     link.href = url
@@ -811,8 +1244,11 @@ export default function Console() {
       (p) =>
         (filter === "archived"
           ? Boolean(p.archived_at)
-          : !p.archived_at && (filter === "all" ||
-            (filter === "refunded" ? p.refunded > 0 : p.status === filter))) &&
+          : !p.archived_at &&
+            (filter === "all" ||
+              (filter === "refunded"
+                ? p.refunded > 0
+                : p.status === filter))) &&
         `${p.customer} ${p.product_name} ${p.id}`
           .toLowerCase()
           .includes(query.toLowerCase())
@@ -820,17 +1256,22 @@ export default function Console() {
   const selectedCurrent = selected
     ? data?.payments.find((p) => p.id === selected.id) || selected
     : null
-  const merchantCheckoutReady = authRole !== "merchant" ||
+  const merchantCheckoutReady =
+    authRole !== "merchant" ||
     data?.provider_status === "sandbox" ||
     Boolean(
       merchantProvider?.status === "connected" &&
       merchantProvider.charges_enabled &&
-      merchantProvider.mode === data?.provider_mode,
+      merchantProvider.mode === data?.provider_mode
     )
-  const checkoutAvailable = data?.checkout_enabled === true && merchantCheckoutReady
-  const keyIssuanceAvailable = data?.provider_status === "sandbox" || data?.provider_status === "ready"
-  const keyIssuanceUnavailableMessage = "API key issuance is unavailable until the workspace owner finishes provider setup. No key was created."
-  const checkoutUnavailableMessage = data?.provider_status === "setup_required"
+  const checkoutAvailable =
+    data?.checkout_enabled === true && merchantCheckoutReady
+  const keyIssuanceAvailable =
+    data?.provider_status === "sandbox" || data?.provider_status === "ready"
+  const keyIssuanceUnavailableMessage =
+    "API key issuance is unavailable until the workspace owner finishes provider setup. No key was created."
+  const checkoutUnavailableMessage =
+    data?.provider_status === "setup_required"
     ? "Checkout setup is required. Payment creation is disabled until the workspace owner configures the required Stripe credentials and verified webhook. No simulator fallback is active."
     : authRole === "merchant" && !merchantCheckoutReady
       ? "This merchant’s Stripe account is not connected and verified in the active mode. Connect it before creating a payment."
@@ -945,9 +1386,16 @@ export default function Console() {
         agora<span>·</span>
       </Link>
       <div className="workspace">
-        <span className="avatar" aria-hidden="true">A</span>
+        <span className="avatar" aria-hidden="true">
+          A
+        </span>
         <div className="workspace-copy">
-          {authRole === "merchant" ? "Merchant" : data?.deployment_type === "community" ? "Agora" : "Belweave"}<small>Workspace</small>
+          {authRole === "merchant"
+            ? "Merchant"
+            : data?.deployment_type === "community"
+              ? "Agora"
+              : "Belweave"}
+          <small>Workspace</small>
         </div>
       </div>
       <nav aria-label="Main navigation">
@@ -967,7 +1415,10 @@ export default function Console() {
             <HugeiconsIcon icon={icons[i]} size={19} aria-hidden="true" />
             <span className="nav-item-label">{title}</span>
             {title === "Agents" && pending.length > 0 && (
-              <span className="nav-count" aria-label={`${pending.length} pending approvals`}>
+              <span
+                className="nav-count"
+                aria-label={`${pending.length} pending approvals`}
+              >
                 {pending.length}
               </span>
             )}
@@ -979,13 +1430,56 @@ export default function Console() {
           <span
             className="sandbox-mark"
             role="note"
-            aria-label={data?.provider_status === "setup_required" ? "Payment setup required" : data?.provider_status === "sandbox" ? "Test mode" : data?.mode === "stripe" ? `Stripe ${data.provider_mode || "mode unavailable"}` : "Provider mode unavailable"}
+            aria-label={
+              data?.provider_status === "setup_required"
+                ? "Payment setup required"
+                : data?.provider_status === "sandbox"
+                  ? "Test mode"
+                  : data?.mode === "stripe"
+                    ? `Stripe ${data.provider_mode || "mode unavailable"}`
+                    : "Provider mode unavailable"
+            }
           >
-            {data?.provider_status === "setup_required" ? "Setup required" : data?.provider_status === "sandbox" ? "Test mode" : data?.mode === "stripe" ? data.provider_mode ? `Stripe ${data.provider_mode}` : "Mode unavailable" : "Mode unavailable"}
+            {data?.provider_status === "setup_required"
+              ? "Setup required"
+              : data?.provider_status === "sandbox"
+                ? "Test mode"
+                : data?.mode === "stripe"
+                  ? data.provider_mode
+                    ? `Stripe ${data.provider_mode}`
+                    : "Mode unavailable"
+                  : "Mode unavailable"}
           </span>
         ) : (
           <Tooltip>
-            <TooltipTrigger render={<span className="sandbox-mark" tabIndex={0} role="note" aria-label={data?.provider_status === "setup_required" ? "Payment setup required" : data?.provider_status === "sandbox" ? "Test mode" : data?.mode === "stripe" ? `Stripe ${data.provider_mode || "mode unavailable"}` : "Provider mode unavailable"} />}>{data?.provider_status === "setup_required" ? "Setup required" : data?.provider_status === "sandbox" ? "Test mode" : data?.mode === "stripe" ? data.provider_mode ? `Stripe ${data.provider_mode}` : "Mode unavailable" : "Mode unavailable"}</TooltipTrigger>
+            <TooltipTrigger
+              render={
+                <span
+                  className="sandbox-mark"
+                  tabIndex={0}
+                  role="note"
+                  aria-label={
+                    data?.provider_status === "setup_required"
+                      ? "Payment setup required"
+                      : data?.provider_status === "sandbox"
+                        ? "Test mode"
+                        : data?.mode === "stripe"
+                          ? `Stripe ${data.provider_mode || "mode unavailable"}`
+                          : "Provider mode unavailable"
+                  }
+                />
+              }
+            >
+              {data?.provider_status === "setup_required"
+                ? "Setup required"
+                : data?.provider_status === "sandbox"
+                  ? "Test mode"
+                  : data?.mode === "stripe"
+                    ? data.provider_mode
+                      ? `Stripe ${data.provider_mode}`
+                      : "Mode unavailable"
+                    : "Mode unavailable"}
+            </TooltipTrigger>
             <TooltipContent>
               {data?.provider_status === "setup_required"
                 ? "Payment creation is disabled until required Stripe credentials and a verified webhook are configured. No simulator fallback is active."
@@ -999,9 +1493,17 @@ export default function Console() {
             </TooltipContent>
           </Tooltip>
         )}
-        <a className="quiet-link" href="/api-reference" aria-label="API reference">
+        <a
+          className="quiet-link"
+          href="/api-reference"
+          aria-label="API reference"
+        >
           <span className="quiet-link-label">API reference</span>
-          <HugeiconsIcon icon={ArrowUpRight01Icon} size={13} aria-hidden="true" />
+          <HugeiconsIcon
+            icon={ArrowUpRight01Icon}
+            size={13}
+            aria-hidden="true"
+          />
         </a>
       </div>
     </aside>
@@ -1017,31 +1519,129 @@ export default function Console() {
     return (
       <main className="auth-page">
         <section className="auth-card" aria-labelledby="owner-setup-title">
-          <Link className="wordmark" href="/" aria-label="Agora home">agora<span>·</span></Link>
+          <Link className="wordmark" href="/" aria-label="Agora home">
+            agora<span>·</span>
+          </Link>
           <h1 id="owner-setup-title">Set up your Agora workspace</h1>
-          <p>Create the owner account for this installation, then secure it with an authenticator app.</p>
-          {setupLinkExpired ? <p role="status">The setup link expired. On the host, run <code>node current/scripts/reset-owner-setup.mjs</code> from the Agora install directory, then open the replacement link saved in the private credentials file.</p> : !setupToken && <p role="status">Open the one-time setup link printed by the installer. Its token is only accepted once.</p>}
+          <p>
+            Create the owner account for this installation, then secure it with
+            an authenticator app.
+          </p>
+          {setupLinkExpired ? (
+            <p role="status">
+              The setup link expired. On the host, run{" "}
+              <code>node current/scripts/reset-owner-setup.mjs</code> from the
+              Agora install directory, then open the replacement link saved in
+              the private credentials file.
+            </p>
+          ) : (
+            !setupToken && (
+              <p role="status">
+                Open the one-time setup link printed by the installer. Its token
+                is only accepted once.
+              </p>
+            )
+          )}
           <form className="form-stack" onSubmit={claimOwnerSetup}>
             <div className="field">
               <Label htmlFor="setup-email">Owner email</Label>
-              <Input id="setup-email" name="email" type="email" autoComplete="username" autoCapitalize="none" spellCheck={false} maxLength={254} value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} aria-invalid={authError ? true : undefined} aria-describedby={authError ? "auth-error" : undefined} required autoFocus disabled={authBusy} />
+              <Input
+                id="setup-email"
+                name="email"
+                type="email"
+                autoComplete="username"
+                autoCapitalize="none"
+                spellCheck={false}
+                maxLength={254}
+                value={authEmail}
+                onChange={(event) => setAuthEmail(event.target.value)}
+                aria-invalid={authError ? true : undefined}
+                aria-describedby={authError ? "auth-error" : undefined}
+                required
+                autoFocus
+                disabled={authBusy}
+              />
             </div>
-            {!setupTokenFromFragment && <div className="field">
+            {!setupTokenFromFragment && (
+              <div className="field">
               <Label htmlFor="setup-token">One-time setup token</Label>
-              <Input id="setup-token" name="setup_token" type="password" autoComplete="off" maxLength={256} value={setupToken} onChange={(event) => setSetupToken(event.target.value.trim())} aria-invalid={authError ? true : undefined} aria-describedby={authError ? "auth-error" : "setup-token-help"} required disabled={authBusy} />
-              <small id="setup-token-help">Paste the token from the private setup link printed by the installer.</small>
-            </div>}
+                <Input
+                  id="setup-token"
+                  name="setup_token"
+                  type="password"
+                  autoComplete="off"
+                  maxLength={256}
+                  value={setupToken}
+                  onChange={(event) => setSetupToken(event.target.value.trim())}
+                  aria-invalid={authError ? true : undefined}
+                  aria-describedby={
+                    authError ? "auth-error" : "setup-token-help"
+                  }
+                  required
+                  disabled={authBusy}
+                />
+                <small id="setup-token-help">
+                  Paste the token from the private setup link printed by the
+                  installer.
+                </small>
+              </div>
+            )}
             <div className="field">
               <Label htmlFor="setup-password">Password</Label>
-              <Input id="setup-password" name="password" type="password" autoComplete="new-password" minLength={12} maxLength={256} value={setupPassword} onChange={(event) => setSetupPassword(event.target.value)} aria-invalid={authError ? true : undefined} aria-describedby={authError ? "auth-error" : "setup-password-requirements"} required disabled={authBusy} />
+              <Input
+                id="setup-password"
+                name="password"
+                type="password"
+                autoComplete="new-password"
+                minLength={12}
+                maxLength={256}
+                value={setupPassword}
+                onChange={(event) => setSetupPassword(event.target.value)}
+                aria-invalid={authError ? true : undefined}
+                aria-describedby={
+                  authError ? "auth-error" : "setup-password-requirements"
+                }
+                required
+                disabled={authBusy}
+              />
             </div>
             <div className="field">
               <Label htmlFor="setup-password-confirm">Confirm password</Label>
-              <Input id="setup-password-confirm" name="password_confirmation" type="password" autoComplete="new-password" minLength={12} maxLength={256} value={setupPasswordConfirm} onChange={(event) => setSetupPasswordConfirm(event.target.value)} aria-invalid={authError ? true : undefined} aria-describedby={authError ? "auth-error" : "setup-password-requirements"} required disabled={authBusy} />
-              <small id="setup-password-requirements">Use at least 12 characters. You will set up MFA next.</small>
+              <Input
+                id="setup-password-confirm"
+                name="password_confirmation"
+                type="password"
+                autoComplete="new-password"
+                minLength={12}
+                maxLength={256}
+                value={setupPasswordConfirm}
+                onChange={(event) =>
+                  setSetupPasswordConfirm(event.target.value)
+                }
+                aria-invalid={authError ? true : undefined}
+                aria-describedby={
+                  authError ? "auth-error" : "setup-password-requirements"
+                }
+                required
+                disabled={authBusy}
+              />
+              <small id="setup-password-requirements">
+                Use at least 12 characters. You will set up MFA next.
+              </small>
             </div>
             {renderAuthError()}
-            <Button type="submit" disabled={authBusy || !setupToken || !authEmail.trim() || !setupPassword || !setupPasswordConfirm}>{authBusy ? "Creating owner account…" : "Create owner account"}</Button>
+            <Button
+              type="submit"
+              disabled={
+                authBusy ||
+                !setupToken ||
+                !authEmail.trim() ||
+                !setupPassword ||
+                !setupPasswordConfirm
+              }
+            >
+              {authBusy ? "Creating owner account…" : "Create owner account"}
+            </Button>
           </form>
         </section>
       </main>
@@ -1051,11 +1651,23 @@ export default function Console() {
     return (
       <main className="auth-page">
         <section className="auth-card" aria-labelledby="auth-title">
-          <Link className="wordmark" href="/" aria-label="Agora home">agora<span>·</span></Link>
+          <Link className="wordmark" href="/" aria-label="Agora home">
+            agora<span>·</span>
+          </Link>
           <h1 id="auth-title">Registration pending</h1>
-          <p>Your account is awaiting approval. Payment data and API access remain unavailable until approval is complete.</p>
-          <p>Questions? <a className="inline-link" href="mailto:info@belweave.com">info@belweave.com</a></p>
-          <Button variant="secondary" onClick={logout} disabled={authBusy}>Sign out</Button>
+          <p>
+            Your account is awaiting approval. Payment data and API access
+            remain unavailable until approval is complete.
+          </p>
+          <p>
+            Questions?{" "}
+            <a className="inline-link" href="mailto:info@belweave.com">
+              info@belweave.com
+            </a>
+          </p>
+          <Button variant="secondary" onClick={logout} disabled={authBusy}>
+            Sign out
+          </Button>
         </section>
       </main>
     )
@@ -1064,23 +1676,58 @@ export default function Console() {
     return (
       <main className="auth-page">
         <section className="auth-card" aria-labelledby="auth-title">
-          <Link className="wordmark" href="/" aria-label="Agora home">agora<span>·</span></Link>
+          <Link className="wordmark" href="/" aria-label="Agora home">
+            agora<span>·</span>
+          </Link>
           <h1 id="auth-title">Set up an authenticator</h1>
           {mfaSecret ? (
             <>
-              <p>Scan this QR code with your authenticator app, then enter its current six-digit code. The QR is generated in this browser and is not sent to another service.</p>
-              {mfaQrData?.uri === mfaUri ? <div className="mfa-qr-wrap"><Image className="mfa-qr" src={mfaQrData.data} alt="Authenticator setup QR code" width={220} height={220} unoptimized /><span>Scan with your authenticator app</span></div> : <p className="form-note" role="status">Preparing a private QR code… If it does not appear, use the setup key below.</p>}
+              <p>
+                Scan this QR code with your authenticator app, then enter its
+                current six-digit code. The QR is generated in this browser and
+                is not sent to another service.
+              </p>
+              {mfaQrData?.uri === mfaUri ? (
+                <div className="mfa-qr-wrap">
+                  <Image
+                    className="mfa-qr"
+                    src={mfaQrData.data}
+                    alt="Authenticator setup QR code"
+                    width={220}
+                    height={220}
+                    unoptimized
+                  />
+                  <span>Scan with your authenticator app</span>
+                </div>
+              ) : (
+                <p className="form-note" role="status">
+                  Preparing a private QR code… If it does not appear, use the
+                  setup key below.
+                </p>
+              )}
               <div className="mfa-secret-block">
                 <details className="mfa-manual-setup">
                   <summary>Set up manually instead</summary>
                 <Label htmlFor="mfa-secret">Setup key</Label>
-                <code id="mfa-secret" className="mfa-secret">{mfaSecret}</code>
-                <Button type="button" variant="secondary" onClick={() => void copy(mfaSecret)}>
-                  Copy setup key <HugeiconsIcon icon={Copy01Icon} aria-hidden="true" />
+                  <code id="mfa-secret" className="mfa-secret">
+                    {mfaSecret}
+                  </code>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => void copy(mfaSecret)}
+                  >
+                    Copy setup key{" "}
+                    <HugeiconsIcon icon={Copy01Icon} aria-hidden="true" />
                 </Button>
                 {mfaUri && (
-                  <Button type="button" variant="ghost" onClick={() => void copy(mfaUri)}>
-                    Copy authenticator setup URI <HugeiconsIcon icon={Copy01Icon} aria-hidden="true" />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => void copy(mfaUri)}
+                    >
+                      Copy authenticator setup URI{" "}
+                      <HugeiconsIcon icon={Copy01Icon} aria-hidden="true" />
                   </Button>
                 )}
                 </details>
@@ -1088,16 +1735,44 @@ export default function Console() {
               <form className="form-stack" onSubmit={submitMfa}>
                 <div className="field">
                   <Label htmlFor="mfa-code">Authenticator code</Label>
-                  <Input id="mfa-code" name="code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" minLength={6} maxLength={6} value={mfaCode} onChange={(event) => setMfaCode(event.target.value.replace(/\D/g, "").slice(0, 6))} aria-invalid={authError ? true : undefined} aria-describedby={authError ? "auth-error" : undefined} required autoFocus />
+                  <Input
+                    id="mfa-code"
+                    name="code"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    pattern="[0-9]{6}"
+                    minLength={6}
+                    maxLength={6}
+                    value={mfaCode}
+                    onChange={(event) =>
+                      setMfaCode(
+                        event.target.value.replace(/\D/g, "").slice(0, 6)
+                      )
+                    }
+                    aria-invalid={authError ? true : undefined}
+                    aria-describedby={authError ? "auth-error" : undefined}
+                    required
+                    autoFocus
+                  />
                 </div>
                 {renderAuthError()}
-                <Button type="submit" disabled={authBusy || mfaCode.length !== 6}>{authBusy ? "Verifying…" : "Verify and finish setup"}</Button>
+                <Button
+                  type="submit"
+                  disabled={authBusy || mfaCode.length !== 6}
+                >
+                  {authBusy ? "Verifying…" : "Verify and finish setup"}
+                </Button>
               </form>
             </>
           ) : (
             <>
-              <p>Sign in again to retrieve the unfinished authenticator setup.</p>
-              <Button onClick={logout} disabled={authBusy}>Sign out</Button>
+              <p>
+                Sign in again to retrieve the unfinished authenticator setup.
+              </p>
+              <Button onClick={logout} disabled={authBusy}>
+                Sign out
+              </Button>
             </>
           )}
         </section>
@@ -1108,21 +1783,59 @@ export default function Console() {
     return (
       <main className="auth-page">
         <section className="auth-card" aria-labelledby="auth-title">
-          <Link className="wordmark" href="/" aria-label="Agora home">agora<span>·</span></Link>
+          <Link className="wordmark" href="/" aria-label="Agora home">
+            agora<span>·</span>
+          </Link>
           <h1 id="auth-title">Verify your identity</h1>
-          <p>Enter a code from your authenticator app{useRecoveryCode ? " or recovery list" : ""}.</p>
+          <p>
+            Enter a code from your authenticator app
+            {useRecoveryCode ? " or recovery list" : ""}.
+          </p>
           <form className="form-stack" onSubmit={submitMfa}>
             <div className="field">
-              <Label htmlFor="mfa-code">{useRecoveryCode ? "Recovery code" : "Authenticator code"}</Label>
-              <Input id="mfa-code" name="code" type="text" inputMode={useRecoveryCode ? "text" : "numeric"} autoComplete={useRecoveryCode ? "off" : "one-time-code"} maxLength={useRecoveryCode ? 32 : 6} value={mfaCode} onChange={(event) => setMfaCode(event.target.value.trim().slice(0, useRecoveryCode ? 32 : 6))} aria-invalid={authError ? true : undefined} aria-describedby={authError ? "auth-error" : undefined} required autoFocus />
+              <Label htmlFor="mfa-code">
+                {useRecoveryCode ? "Recovery code" : "Authenticator code"}
+              </Label>
+              <Input
+                id="mfa-code"
+                name="code"
+                type="text"
+                inputMode={useRecoveryCode ? "text" : "numeric"}
+                autoComplete={useRecoveryCode ? "off" : "one-time-code"}
+                maxLength={useRecoveryCode ? 32 : 6}
+                value={mfaCode}
+                onChange={(event) =>
+                  setMfaCode(
+                    event.target.value.trim().slice(0, useRecoveryCode ? 32 : 6)
+                  )
+                }
+                aria-invalid={authError ? true : undefined}
+                aria-describedby={authError ? "auth-error" : undefined}
+                required
+                autoFocus
+              />
             </div>
             {renderAuthError()}
-            <Button type="submit" disabled={authBusy || !mfaCode.trim()}>{authBusy ? "Verifying…" : "Verify and sign in"}</Button>
+            <Button type="submit" disabled={authBusy || !mfaCode.trim()}>
+              {authBusy ? "Verifying…" : "Verify and sign in"}
+            </Button>
           </form>
-          <button type="button" className="text-button" onClick={() => { setUseRecoveryCode((value) => !value); setMfaCode(""); setAuthError("") }}>
-            {useRecoveryCode ? "Use an authenticator code" : "Use a recovery code"}
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => {
+              setUseRecoveryCode((value) => !value)
+              setMfaCode("")
+              setAuthError("")
+            }}
+          >
+            {useRecoveryCode
+              ? "Use an authenticator code"
+              : "Use a recovery code"}
           </button>
-          <Button variant="ghost" onClick={logout} disabled={authBusy}>Sign out</Button>
+          <Button variant="ghost" onClick={logout} disabled={authBusy}>
+            Sign out
+          </Button>
         </section>
       </main>
     )
@@ -1130,14 +1843,31 @@ export default function Console() {
   if (authState === "recovery") {
     return (
       <main className="auth-page">
-        <section className="auth-card recovery-card" aria-labelledby="auth-title">
-          <Link className="wordmark" href="/" aria-label="Agora home">agora<span>·</span></Link>
+        <section
+          className="auth-card recovery-card"
+          aria-labelledby="auth-title"
+        >
+          <Link className="wordmark" href="/" aria-label="Agora home">
+            agora<span>·</span>
+          </Link>
           <h1 id="auth-title">Save your recovery codes</h1>
-          <p>Each code works once. Store these somewhere private; they will not be shown again.</p>
-          <ul className="recovery-code-list" aria-label="One-time recovery codes">
-            {recoveryCodes.map((code) => <li key={code}><code>{code}</code></li>)}
+          <p>
+            Each code works once. Store these somewhere private; they will not
+            be shown again.
+          </p>
+          <ul
+            className="recovery-code-list"
+            aria-label="One-time recovery codes"
+          >
+            {recoveryCodes.map((code) => (
+              <li key={code}>
+                <code>{code}</code>
+              </li>
+            ))}
           </ul>
-          <Button variant="secondary" onClick={downloadRecoveryCodes}>Download codes</Button>
+          <Button variant="secondary" onClick={downloadRecoveryCodes}>
+            Download codes
+          </Button>
           <Button onClick={finishRecoverySetup}>I’ve saved these codes</Button>
         </section>
       </main>
@@ -1153,7 +1883,13 @@ export default function Console() {
           <h1 id="auth-title">Sign in</h1>
           <p>Sign in to your Agora account.</p>
           {authNotice && <p role="status">{authNotice}</p>}
-          <p className="auth-account">{deploymentType === "community" ? "Workspace owner account" : deploymentType === "hosted" ? "Owner and merchant accounts" : "Account access"}</p>
+          <p className="auth-account">
+            {deploymentType === "community"
+              ? "Workspace owner account"
+              : deploymentType === "hosted"
+                ? "Owner and merchant accounts"
+                : "Account access"}
+          </p>
           <form className="form-stack" onSubmit={login}>
             <div className="field">
               <Label htmlFor="account-email">Email address</Label>
@@ -1190,21 +1926,44 @@ export default function Console() {
               {authBusy ? "Signing in…" : "Sign in"}
             </Button>
           </form>
-          {deploymentType === "hosted" && <p className="auth-register">New merchant? <a className="inline-link" href="/register">Request access</a></p>}
-          <p className="support-note">Support: <a className="inline-link" href="mailto:info@belweave.com">info@belweave.com</a></p>
+          {deploymentType === "hosted" && (
+            <p className="auth-register">
+              New merchant?{" "}
+              <a className="inline-link" href="/register">
+                Request access
+              </a>
+            </p>
+          )}
+          <p className="support-note">
+            Support:{" "}
+            <a className="inline-link" href="mailto:info@belweave.com">
+              info@belweave.com
+            </a>
+          </p>
         </section>
       </main>
     )
   }
-  if (authState === "signed-in" && authRole === "owner" && passwordChangeRequired) {
+  if (
+    authState === "signed-in" &&
+    authRole === "owner" &&
+    passwordChangeRequired
+  ) {
     return (
       <main className="auth-page">
         <section className="auth-card" aria-labelledby="password-change-title">
-          <Link className="wordmark" href="/" aria-label="Agora home">agora<span>·</span></Link>
+          <Link className="wordmark" href="/" aria-label="Agora home">
+            agora<span>·</span>
+          </Link>
           <h1 id="password-change-title">Choose your password</h1>
-          <p>Your temporary bootstrap password got you started. Set a private password to continue into Agora.</p>
+          <p>
+            Your temporary bootstrap password got you started. Set a private
+            password to continue into Agora.
+          </p>
           <PasswordChangeForm required onChanged={finishPasswordChange} />
-          <Button variant="ghost" onClick={logout} disabled={authBusy}>Sign out</Button>
+          <Button variant="ghost" onClick={logout} disabled={authBusy}>
+            Sign out
+          </Button>
         </section>
       </main>
     )
@@ -1212,7 +1971,9 @@ export default function Console() {
   return (
     <TooltipProvider>
       <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
-      <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+        <div
+          className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}
+        >
         {renderSidebar()}
         <main className="main">
           <header className="topbar">
@@ -1220,7 +1981,9 @@ export default function Console() {
               <button
                 type="button"
                 className="sidebar-toggle desktop-sidebar-toggle"
-                aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+                  aria-label={
+                    sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"
+                  }
                 aria-controls="desktop-navigation"
                 aria-expanded={!sidebarCollapsed}
                 onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
@@ -1242,7 +2005,8 @@ export default function Console() {
                 <span aria-hidden="true">☰</span>
               </SheetTrigger>
               <span>
-                Workspace <span className="breadcrumb-slash">/</span> <b>{view}</b>
+                  Workspace <span className="breadcrumb-slash">/</span>{" "}
+                  <b>{view}</b>
               </span>
             </div>
             <div className="topbar-right">
@@ -1260,7 +2024,11 @@ export default function Console() {
             </div>
           </header>
           {error ? (
-            <section className="error-state" role="alert" aria-live="assertive">
+              <section
+                className="error-state"
+                role="alert"
+                aria-live="assertive"
+              >
               <h1>Let’s reconnect.</h1>
               <p>{error}</p>
               <Button onClick={() => void load()}>Try again</Button>
@@ -1274,27 +2042,65 @@ export default function Console() {
           ) : (
             <>
               {data.provider_status === "setup_required" && (
-                <section className="merchant-provider-panel provider-setup-alert" aria-labelledby="provider-setup-title">
+                  <section
+                    className="merchant-provider-panel provider-setup-alert"
+                    aria-labelledby="provider-setup-title"
+                  >
                   <div>
                     <h2 id="provider-setup-title">Checkout setup required</h2>
                     <p>
-                      Payments are paused until this deployment connects Stripe and verifies a signed webhook. Configure Stripe to continue.
+                        Payments are paused until this deployment connects
+                        Stripe and verifies a signed webhook. Configure Stripe
+                        to continue.
                     </p>
                   </div>
-                  {authRole === "owner" && <Button onClick={() => navigate("Settings")}>Configure Stripe</Button>}
+                    {authRole === "owner" && (
+                      <Button onClick={() => navigate("Settings")}>
+                        Configure Stripe
+                      </Button>
+                    )}
                 </section>
               )}
               {view === "Settings" && (
                 <>
-                  <section className="page-heading"><div><h1>Settings</h1><p>Manage account security and connect Stripe for this Agora deployment.</p></div></section>
-                  {authRole === "owner" ? <>
-                    <section className="settings-panel" aria-labelledby="security-settings-title">
-                      <div><h2 id="security-settings-title">Security</h2><p>Change the password used with your authenticator to sign in.</p></div>
-                      <PasswordChangeForm onChanged={finishPasswordChange} />
+                    <section className="page-heading">
+                      <div>
+                        <h1>Settings</h1>
+                        <p>
+                          Manage account security and connect Stripe for this
+                          Agora deployment.
+                        </p>
+                      </div>
+                    </section>
+                    {authRole === "owner" ? (
+                      <>
+                        <section
+                          className="settings-panel"
+                          aria-labelledby="security-settings-title"
+                        >
+                          <div>
+                            <h2 id="security-settings-title">Security</h2>
+                            <p>
+                              Change the password used with your authenticator
+                              to sign in.
+                            </p>
+                          </div>
+                          <PasswordChangeForm
+                            onChanged={finishPasswordChange}
+                          />
                     </section>
                     <StripeSetup onChange={() => void load()} />
-                    <InstallationPanel version={data.current_version} target={data.deployment_target} hosting={data.deployment_hosting} />
-                  </> : <p role="status">Only the workspace owner can change workspace settings.</p>}
+                        <InstallationPanel
+                          version={data.current_version}
+                          target={data.deployment_target}
+                          hosting={data.deployment_hosting}
+                        />
+                      </>
+                    ) : (
+                      <p role="status">
+                        Only the workspace owner can change workspace settings.
+                      </p>
+                    )}
                 </>
               )}
               {view === "Overview" && (
@@ -1308,21 +2114,81 @@ export default function Console() {
                       Create payment
                     </Button>
                   </section>
-                  <div className="activity-range-controls" role="group" aria-label="Payment activity time range">
-                    {([["1h", "1 hour"], ["24h", "24 hours"], ["7d", "7 days"], ["30d", "30 days"], ["90d", "90 days"], ["1y", "1 year"], ["all", "All time"], ["custom", "Custom"]] as const).map(([value, label]) => (
-                      <Button key={value} type="button" size="sm" variant={activityRange === value ? "secondary" : "ghost"} aria-pressed={activityRange === value} onClick={() => setActivityRange(value)}>{label}</Button>
+                    <div
+                      className="activity-range-controls"
+                      role="group"
+                      aria-label="Payment activity time range"
+                    >
+                      {(
+                        [
+                          ["1h", "1 hour"],
+                          ["24h", "24 hours"],
+                          ["7d", "7 days"],
+                          ["30d", "30 days"],
+                          ["90d", "90 days"],
+                          ["1y", "1 year"],
+                          ["all", "All time"],
+                          ["custom", "Custom"],
+                        ] as const
+                      ).map(([value, label]) => (
+                        <Button
+                          key={value}
+                          type="button"
+                          size="sm"
+                          variant={
+                            activityRange === value ? "secondary" : "ghost"
+                          }
+                          aria-pressed={activityRange === value}
+                          onClick={() => setActivityRange(value)}
+                        >
+                          {label}
+                        </Button>
                     ))}
-                    {activityRange === "custom" && <span className="activity-custom-range">
-                      <Label htmlFor="activity-from">From</Label><Input id="activity-from" type="date" value={customStart} onChange={(event) => setCustomStart(event.target.value)} />
-                      <Label htmlFor="activity-to">To</Label><Input id="activity-to" type="date" value={customEnd} onChange={(event) => setCustomEnd(event.target.value)} />
-                    </span>}
+                      {activityRange === "custom" && (
+                        <span className="activity-custom-range">
+                          <Label htmlFor="activity-from">From</Label>
+                          <Input
+                            id="activity-from"
+                            type="date"
+                            value={customStart}
+                            onChange={(event) =>
+                              setCustomStart(event.target.value)
+                            }
+                          />
+                          <Label htmlFor="activity-to">To</Label>
+                          <Input
+                            id="activity-to"
+                            type="date"
+                            value={customEnd}
+                            onChange={(event) =>
+                              setCustomEnd(event.target.value)
+                            }
+                          />
+                        </span>
+                      )}
                   </div>
-                  <p className="subtle activity-timezone-note">All time boundaries use UTC. Archived transactions stay in financial totals.</p>
-                  {activityError && <p className="form-note" role="status">{activityError}</p>}
+                    <p className="subtle activity-timezone-note">
+                      All time boundaries use UTC. Archived transactions stay in
+                      financial totals.
+                    </p>
+                    {activityError && (
+                      <p className="form-note" role="status">
+                        {activityError}
+                      </p>
+                    )}
                   <section className="overview-volume">
                     <div>
                       <div className="section-label">
-                        Gross processed <span>Successful payments created · {activityRange === "custom" ? `${customStart} to ${customEnd}` : activityRange === "all" ? "all time" : `last ${activityRange}`} · UTC · before provider fees</span>
+                          Gross processed{" "}
+                          <span>
+                            Successful payments created ·{" "}
+                            {activityRange === "custom"
+                              ? `${customStart} to ${customEnd}`
+                              : activityRange === "all"
+                                ? "all time"
+                                : `last ${activityRange}`}{" "}
+                            · UTC · before provider fees
+                          </span>
                       </div>
                       <div className="hero-number">
                         {volume === undefined ? (
@@ -1335,22 +2201,34 @@ export default function Console() {
                         )}
                       </div>
                       <p className="subtle">
-                        {activity?.successful_payments ?? "Unavailable"} successful payments{" "}
+                          {activity?.successful_payments ?? "Unavailable"}{" "}
+                          successful payments{" "}
                         <span className="inline-dot">·</span> UTC
                       </p>
                       {!activity ? (
-                        <p className="chart-empty" role="status">Payment activity is unavailable.</p>
-                      ) : volumeSeries.some((day) => day.amount > 0) ? <div className="volume-chart">
+                          <p className="chart-empty" role="status">
+                            Payment activity is unavailable.
+                          </p>
+                        ) : volumeSeries.some((day) => day.amount > 0) ? (
+                          <div className="volume-chart">
                         <AreaChart
                           data={volumeSeries}
                           config={{
-                            total: { label: "Gross processed amount", color: "grey" },
+                                total: {
+                                  label: "Gross processed amount",
+                                  color: "grey",
+                                },
                           }}
                           ariaLabel={`Cumulative gross amount from successful payments created for ${activityRange} in UTC, before provider fees. Exact bucket counts, amounts, and refunds attributed to those payments are available in the accessible table after the chart.`}
                           animate={false}
                           bloom="off"
                           className="dither-area-chart"
-                          margins={{ top: 12, right: 8, bottom: 28, left: 64 }}
+                              margins={{
+                                top: 12,
+                                right: 8,
+                                bottom: 28,
+                                left: 64,
+                              }}
                         >
                           <Grid
                             horizontal
@@ -1368,11 +2246,18 @@ export default function Console() {
                             valueFormatter={(value) => money(value)}
                           />
                         </AreaChart>
-                      </div> : <p className="chart-empty">No successful payments were created in this period.</p>}
+                          </div>
+                        ) : (
+                          <p className="chart-empty">
+                            No successful payments were created in this period.
+                          </p>
+                        )}
                       <div className="accessible-chart-data">
                       <table>
                         <caption>
-                          Successful payments created for the selected UTC time range. Refunds are attributed to the date the payment was created.
+                              Successful payments created for the selected UTC
+                              time range. Refunds are attributed to the date the
+                              payment was created.
                         </caption>
                         <thead>
                           <tr>
@@ -1387,7 +2272,10 @@ export default function Console() {
                           {volumeSeries.map((day) => (
                             <tr key={day.day.toISOString()}>
                               <th scope="row">
-                                {activityAccessibleLabel(day.day.toISOString(), activity?.bucket_seconds)}
+                                    {activityAccessibleLabel(
+                                      day.day.toISOString(),
+                                      activity?.bucket_seconds
+                                    )}
                               </th>
                               <td>{day.successfulPayments}</td>
                               <td>{money(day.amount)}</td>
@@ -1403,11 +2291,19 @@ export default function Console() {
                   <section className="small-stats">
                     <div>
                       <span>Net after refunds</span>
-                      <strong>{volume === undefined || refunded === undefined ? "Unavailable" : money(volume - refunded)}</strong>
+                        <strong>
+                          {volume === undefined || refunded === undefined
+                            ? "Unavailable"
+                            : money(volume - refunded)}
+                        </strong>
                     </div>
                     <div>
                       <span>Refunded on these payments</span>
-                      <strong>{refunded === undefined ? "Unavailable" : money(refunded)}</strong>
+                        <strong>
+                          {refunded === undefined
+                            ? "Unavailable"
+                            : money(refunded)}
+                        </strong>
                     </div>
                     <div>
                       <span>Active agents</span>
@@ -1423,9 +2319,15 @@ export default function Console() {
                       </strong>
                     </div>
                   </section>
-                  {authRole === "owner" && <RiskSignals key={data.provider_mode || "test"} preferredMode={data.provider_mode} />}
+                    {authRole === "owner" && (
+                      <RiskSignals
+                        key={data.provider_mode || "test"}
+                        preferredMode={data.provider_mode}
+                      />
+                    )}
                   <p className="subtle finance-note">
-                    These totals do not include provider fees or payout timing and are not an available bank balance.
+                      These totals do not include provider fees or payout timing
+                      and are not an available bank balance.
                   </p>
                   <section className="recent">
                     <div className="section-heading">
@@ -1434,7 +2336,8 @@ export default function Console() {
                         variant="ghost"
                         onClick={() => navigate("Payments")}
                       >
-                        All payments <HugeiconsIcon icon={ArrowUpRight01Icon} />
+                          All payments{" "}
+                          <HugeiconsIcon icon={ArrowUpRight01Icon} />
                       </Button>
                     </div>
                     {paymentTable(data.payments.slice(0, 5))}
@@ -1448,7 +2351,12 @@ export default function Console() {
                       <h1>Payments</h1>
                     </div>
                     <div className="button-row">
-                      <Button variant="secondary" onClick={toggleArchivedView}>{showArchived ? "Hide archived" : "Show archived"}</Button>
+                        <Button
+                          variant="secondary"
+                          onClick={toggleArchivedView}
+                        >
+                          {showArchived ? "Hide archived" : "Show archived"}
+                        </Button>
                       <Button onClick={() => openPayment()}>
                         <HugeiconsIcon icon={PlusSignIcon} />
                         Create payment
@@ -1488,7 +2396,10 @@ export default function Console() {
                     <div className="empty-state">
                       <h2>No payments here yet.</h2>
                       <p>No payments match the current filters.</p>
-                      <Button variant="secondary" onClick={() => openPayment()}>
+                        <Button
+                          variant="secondary"
+                          onClick={() => openPayment()}
+                        >
                         Create payment
                       </Button>
                     </div>
@@ -1502,7 +2413,12 @@ export default function Console() {
                       <h1>Catalog</h1>
                     </div>
                     <div className="button-row">
-                      <Button variant="secondary" onClick={toggleArchivedView}>{showArchived ? "Hide archived" : "Show archived"}</Button>
+                        <Button
+                          variant="secondary"
+                          onClick={toggleArchivedView}
+                        >
+                          {showArchived ? "Hide archived" : "Show archived"}
+                        </Button>
                       <Button onClick={() => setDialog("product")}>
                         <HugeiconsIcon icon={PlusSignIcon} />
                         New product
@@ -1511,16 +2427,37 @@ export default function Console() {
                   </section>
                   <div className="catalog-grid">
                     {data.products.map((p) => (
-                      <article key={p.id} className={`product-item${p.archived_at ? " product-item-archived" : ""}`}>
+                        <article
+                          key={p.id}
+                          className={`product-item${p.archived_at ? "product-item-archived" : ""}`}
+                        >
                         <code className="product-id">{p.id}</code>
                         <h2>{p.name}</h2>
-                        {p.archived_at && <span className="archived-label">Archived</span>}
+                          {p.archived_at && (
+                            <span className="archived-label">Archived</span>
+                          )}
                         <p>{p.description || "No description"}</p>
                         <div className="product-price">
                           {money(p.amount)}
-                          <span>USD · one time</span>
+                            <span>
+                              USD · one time · v
+                              {(p as typeof p & { version?: number }).version ??
+                                1}
+                            </span>
                         </div>
                         <div className="product-actions">
+                            <Button
+                              variant="secondary"
+                              disabled={Boolean(p.archived_at) || busy}
+                              onClick={() => {
+                                setEditingProduct(
+                                  p as typeof p & { version?: number }
+                                )
+                                setDialog("product")
+                              }}
+                            >
+                              Edit
+                            </Button>
                           <Button
                             variant="secondary"
                             disabled={Boolean(p.archived_at)}
@@ -1533,28 +2470,367 @@ export default function Console() {
                             <TooltipTrigger
                               render={
                                 <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  aria-label={`Copy ${p.name} product ID`}
-                                  onClick={() => copy(p.id)}
-                                />
+                                    variant="ghost"
+                                    size="icon"
+                                    aria-label={`Copy ${p.name} product ID`}
+                                    onClick={() => copy(p.id)}
+                                  />
+                                }
+                              >
+                                <HugeiconsIcon icon={Copy01Icon} />
+                              </TooltipTrigger>
+                              <TooltipContent>Copy product ID</TooltipContent>
+                            </Tooltip>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              disabled={busy}
+                              onClick={() =>
+                                void setArchivedRecord(
+                                  "products",
+                                  p.id,
+                                  !p.archived_at
+                                )
                               }
                             >
-                              <HugeiconsIcon icon={Copy01Icon} />
-                            </TooltipTrigger>
-                            <TooltipContent>Copy product ID</TooltipContent>
-                          </Tooltip>
-                          <Button type="button" variant="ghost" disabled={busy} onClick={() => void setArchivedRecord("products", p.id, !p.archived_at)}>
-                            {p.archived_at ? "Restore" : "Archive"}
+                              {p.archived_at ? "Restore" : "Archive"}
+                            </Button>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                    <p className="catalog-note">
+                      Prices are fixed to keep every payment explainable. Create
+                      a new product for a new price.
+                    </p>
+                  </>
+                )}
+                {view === "Orders" && (
+                  <>
+                    <section className="page-heading">
+                      <div>
+                        <h1>Orders</h1>
+                        <p>
+                          Quotes, customer orders, and payment-confirmed
+                          fulfillment.
+                        </p>
+                      </div>
+                      {salesTab === "quotes" && (
+                        <Button
+                          onClick={() => {
+                            setQuoteLines(
+                              data.products
+                                .filter((p) => !p.archived_at)
+                                .slice(0, 1)
+                                .map((p) => ({ product_id: p.id, quantity: 1 }))
+                            )
+                            setDialog("quote")
+                          }}
+                          disabled={!data.products.some((p) => !p.archived_at)}
+                        >
+                          <HugeiconsIcon icon={PlusSignIcon} />
+                          New quote
+                        </Button>
+                      )}
+                    </section>
+                    <Tabs
+                      value={salesTab}
+                      onValueChange={(value) =>
+                        setSalesTab(value as typeof salesTab)
+                      }
+                    >
+                      <TabsList variant="line">
+                        <TabsTrigger value="orders">Orders</TabsTrigger>
+                        <TabsTrigger value="quotes">Quotes</TabsTrigger>
+                        <TabsTrigger value="customers">Customers</TabsTrigger>
+                      </TabsList>
+                    </Tabs>
+                    {salesError && (
+                      <p className="form-note" role="alert">
+                        {salesError}
+                      </p>
+                    )}
+                    {salesTab === "orders" &&
+                      (salesOrders.length ? (
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Order</TableHead>
+                              <TableHead>Customer</TableHead>
+                              <TableHead>Amount</TableHead>
+                              <TableHead>Payment</TableHead>
+                              <TableHead>Fulfillment</TableHead>
+                              <TableHead>Created</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {salesOrders.map((order) => {
+                              const f = fulfillments.find(
+                                (x) => x.order_id === order.id
+                              )
+                              return (
+                                <TableRow key={order.id}>
+                                  <TableCell>
+                                    <code>{order.id}</code>
+                                  </TableCell>
+                                  <TableCell>{order.customer_name}</TableCell>
+                                  <TableCell>
+                                    <div>{money(order.total_amount)}</div>
+                                    {!!order.refunded_amount && (
+                                      <small className="text-muted-foreground">
+                                        Refunded {money(order.refunded_amount)}
+                                        {order.net_amount !== undefined &&
+                                          ` · net ${money(order.net_amount)}`}
+                                      </small>
+                                    )}
+                                  </TableCell>
+                                  <TableCell>
+                                    <Badge variant="secondary">
+                                      {order.payment_status === "refunded"
+                                        ? "Refunded"
+                                        : order.payment_status === "partially_refunded"
+                                          ? "Partially refunded"
+                                          : order.status === "paid"
+                                        ? "Paid"
+                                        : order.status === "awaiting_payment"
+                                          ? "Awaiting payment"
+                                          : order.status}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell>
+                                    {f ? (
+                                      <div className="product-actions">
+                                        <Badge variant="secondary">
+                                          {f.status.replaceAll("_", " ")}
+                                        </Badge>
+                                        {f.status === "ready" && (
+                                          <Button
+                                            size="sm"
+                                            variant="secondary"
+                                            disabled={salesBusy}
+                                            onClick={() =>
+                                              void updateFulfillment(
+                                                "claim_fulfillment",
+                                                f.id
+                                              )
+                                            }
+                                          >
+                                            Claim
+                                          </Button>
+                                        )}
+                                        {f.status === "claimed" && (
+                                          <>
+                                            <Button
+                                              size="sm"
+                                              disabled={salesBusy}
+                                              onClick={() => void updateFulfillment("complete_fulfillment", f.id)}
+                                            >
+                                              Mark delivered
+                                            </Button>
+                                            <Button
+                                              size="sm"
+                                              variant="secondary"
+                                              disabled={salesBusy}
+                                              onClick={() => void updateFulfillment("fail_fulfillment", f.id)}
+                                            >
+                                              Mark failed
+                                            </Button>
+                                          </>
+                                        )}
+                                        {f.status === "failed" && order.status === "paid" && (
+                                          <Button
+                                            size="sm"
+                                            variant="secondary"
+                                            disabled={salesBusy}
+                                            onClick={() => void updateFulfillment("retry_fulfillment", f.id)}
+                                          >
+                                            Retry fulfillment
+                                          </Button>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      "—"
+                                    )}
+                                  </TableCell>
+                                  <TableCell>
+                                    {date(order.created_at)}
+                                  </TableCell>
+                                </TableRow>
+                              )
+                            })}
+                          </TableBody>
+                        </Table>
+                      ) : (
+                        <div className="empty-state">
+                          <h2>No orders yet.</h2>
+                          <p>
+                            Accept a quote to create an order. Payment
+                            confirmation and fulfillment progress will appear
+                            here.
+                          </p>
+                          <Button
+                            variant="secondary"
+                            onClick={() => setSalesTab("quotes")}
+                          >
+                            View quotes
                           </Button>
                         </div>
-                      </article>
+                      ))}
+                    {salesTab === "quotes" && (
+                      <>
+                        {selectedQuote && (
+                          <section className="checkout-result">
+                            <strong>Share this quote</strong>
+                            <span>
+                              {selectedQuote.customer_name} ·{" "}
+                              {money(selectedQuote.total_amount)} · expires{" "}
+                              {new Date(
+                                selectedQuote.expires_at
+                              ).toLocaleString()}
+                            </span>
+                            {selectedQuote.quote_url &&
+                            selectedQuote.quote_link_available !== false ? (
+                              <>
+                                <a
+                                  className="checkout-share-link"
+                                  href={selectedQuote.quote_url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  {selectedQuote.quote_url}
+                                </a>
+                                <Button
+                                  variant="secondary"
+                                  onClick={() => copy(selectedQuote.quote_url!)}
+                                >
+                                  Copy quote link
+                                </Button>
+                              </>
+                            ) : (
+                              <>
+                                <p role="status">
+                                  This older quote has no recoverable customer
+                                  link. Create a replacement quote to share with
+                                  the customer.
+                                </p>
+                                <Button variant="secondary" disabled>
+                                  Copy quote link unavailable
+                                </Button>
+                              </>
+                            )}
+                          </section>
+                        )}
+                        {salesQuotes.length ? (
+                          <div className="catalog-grid">
+                            {salesQuotes.map((q) => (
+                              <article className="product-item" key={q.id}>
+                                <code className="product-id">{q.id}</code>
+                                <h2>{q.customer_name || "Quote"}</h2>
+                                <p>{q.customer_email || "No email provided"}</p>
+                                <div className="product-price">
+                                  {money(q.total_amount)}
+                                  <span>
+                                    {q.currency.toUpperCase()} · expires{" "}
+                                    {new Date(q.expires_at).toLocaleString()}
+                                  </span>
+                                </div>
+                                <ul>
+                                  {q.items.map((item, i) => (
+                                    <li key={`${q.id}-${i}`}>
+                                      {item.quantity} × {item.product_name} ·{" "}
+                                      {money(item.unit_amount)} each ·{" "}
+                                      {money(item.line_total)}
+                                      {item.catalog_version
+                                        ? ` · v${item.catalog_version}`
+                                        : ""}
+                                    </li>
+                                  ))}
+                                </ul>
+                                {q.discount_amount > 0 && (
+                                  <p>
+                                    Subtotal {money(q.subtotal_amount)} ·
+                                    Discount −{money(q.discount_amount)}
+                                  </p>
+                                )}
+                                <div className="product-actions">
+                                  <Badge variant="secondary">{q.status}</Badge>
+                                </div>
+                              </article>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="empty-state">
+                            <h2>No quotes yet.</h2>
+                            <p>
+                              Create a quote with a fixed item and expiry. Share
+                              it with the customer so they can review and
+                              accept.
+                            </p>
+                            <Button
+                              variant="secondary"
+                              onClick={() => setDialog("quote")}
+                              disabled={
+                                !data.products.some((p) => !p.archived_at)
+                              }
+                            >
+                              Create quote
+                            </Button>
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {salesTab === "customers" &&
+                      (salesCustomers.length ? (
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Name</TableHead>
+                              <TableHead>Email</TableHead>
+                              <TableHead>Orders</TableHead>
+                              <TableHead>Net paid</TableHead>
+                              <TableHead>Added</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {salesCustomers.map((customer) => {
+                              const related = salesOrders.filter(
+                                (o) => o.customer_id === customer.id
+                              )
+                              const paid = related
+                                .filter((o) => o.status === "paid")
+                                .reduce(
+                                  (sum, o) => sum + (o.net_amount ?? o.total_amount),
+                                  0
+                                )
+                              return (
+                                <TableRow key={customer.id}>
+                                  <TableCell>{customer.name}</TableCell>
+                                  <TableCell>{customer.email || "—"}</TableCell>
+                                  <TableCell>{related.length}</TableCell>
+                                  <TableCell>{money(paid)}</TableCell>
+                                  <TableCell>
+                                    {date(customer.created_at)}
+                                  </TableCell>
+                                </TableRow>
+                              )
+                            })}
+                          </TableBody>
+                        </Table>
+                      ) : (
+                        <div className="empty-state">
+                          <h2>No customers yet.</h2>
+                          <p>
+                            Customer records appear when you create a quote or
+                            order.
+                          </p>
+                          <Button
+                            variant="secondary"
+                            onClick={() => setSalesTab("quotes")}
+                            >
+                            Create a quote
+                          </Button>
+                        </div>
                     ))}
-                  </div>
-                  <p className="catalog-note">
-                    Prices are fixed to keep every payment explainable. Create a
-                    new product for a new price.
-                  </p>
                 </>
               )}
               {view === "Agents" && (
@@ -1562,7 +2838,13 @@ export default function Console() {
                   <section className="page-heading">
                     <div>
                       <h1>{authRole === "merchant" ? "Access" : "Agents"}</h1>
-                      <p>{authRole === "merchant" ? "Provider connection, API keys, and refund approvals." : data.deployment_type === "community" ? "Scoped API keys for your applications and agents." : "Keys, permissions, and approvals."}</p>
+                        <p>
+                          {authRole === "merchant"
+                            ? "Provider connection, API keys, and refund approvals."
+                            : data.deployment_type === "community"
+                              ? "Scoped API keys for your applications and agents."
+                              : "Keys, permissions, and approvals."}
+                        </p>
                     </div>
                     <Button onClick={() => openKey()}>
                       <HugeiconsIcon icon={PlusSignIcon} />
@@ -1570,14 +2852,20 @@ export default function Console() {
                     </Button>
                   </section>
                   {authRole === "merchant" && (
-                    <section className="merchant-provider-panel" aria-labelledby="merchant-provider-title">
+                      <section
+                        className="merchant-provider-panel"
+                        aria-labelledby="merchant-provider-title"
+                      >
                       <div>
-                        <h2 id="merchant-provider-title">Stripe connection</h2>
+                          <h2 id="merchant-provider-title">
+                            Stripe connection
+                          </h2>
                         {merchantProviderError ? (
                           <p role="alert">{merchantProviderError}</p>
                         ) : merchantProvider ? (
                           <p>
-                            {merchantProvider.status === "connected" && merchantProvider.charges_enabled
+                              {merchantProvider.status === "connected" &&
+                              merchantProvider.charges_enabled
                               ? `Connected in ${merchantProvider.mode} mode. Stripe reports charges enabled.`
                               : merchantProvider.status === "charges_pending"
                                 ? `Stripe setup is incomplete in ${merchantProvider.mode} mode. Payments are unavailable until charges are enabled.`
@@ -1588,15 +2876,44 @@ export default function Console() {
                         )}
                       </div>
                       {merchantProviderError ? (
-                        <Button variant="secondary" onClick={() => setProviderRefresh((current) => current + 1)}>Retry status</Button>
-                      ) : merchantProvider && !(merchantProvider.status === "connected" && merchantProvider.charges_enabled) ? (
-                        <Button disabled={providerBusyTenant === authTenantId} onClick={() => void connectTenant(authTenantId)}>
-                          {providerBusyTenant === authTenantId ? "Opening Stripe…" : merchantProvider.status === "charges_pending" ? "Continue Stripe setup" : "Connect Stripe"}
+                          <Button
+                            variant="secondary"
+                            onClick={() =>
+                              setProviderRefresh((current) => current + 1)
+                            }
+                          >
+                            Retry status
+                          </Button>
+                        ) : merchantProvider &&
+                          !(
+                            merchantProvider.status === "connected" &&
+                            merchantProvider.charges_enabled
+                          ) ? (
+                          <Button
+                            disabled={providerBusyTenant === authTenantId}
+                            onClick={() => void connectTenant(authTenantId)}
+                          >
+                            {providerBusyTenant === authTenantId
+                              ? "Opening Stripe…"
+                              : merchantProvider.status === "charges_pending"
+                                ? "Continue Stripe setup"
+                                : "Connect Stripe"}
                         </Button>
-                      ) : merchantProvider?.status === "connected" && (
-                        <Button variant="secondary" disabled={providerBusyTenant === authTenantId} onClick={() => void disconnectTenant(authTenantId, "your merchant account")}>
+                        ) : (
+                          merchantProvider?.status === "connected" && (
+                            <Button
+                              variant="secondary"
+                              disabled={providerBusyTenant === authTenantId}
+                              onClick={() =>
+                                void disconnectTenant(
+                                  authTenantId,
+                                  "your merchant account"
+                                )
+                              }
+                            >
                           Disconnect Stripe
                         </Button>
+                          )
                       )}
                     </section>
                   )}
@@ -1647,7 +2964,9 @@ export default function Console() {
                                     approval_id: a.id,
                                     decision: "approve",
                                   })
-                                  toast.success("Refund approved and completed")
+                                    toast.success(
+                                      "Refund approved and completed"
+                                    )
                                 })
                               }
                             >
@@ -1658,69 +2977,177 @@ export default function Console() {
                       ))}
                     </section>
                   )}
-                  {data.deployment_type !== "community" && data.registrations.length > 0 && (
-                    <section className="merchant-registrations" aria-labelledby="merchant-registrations-title">
+                    {data.deployment_type !== "community" &&
+                      data.registrations.length > 0 && (
+                        <section
+                          className="merchant-registrations"
+                          aria-labelledby="merchant-registrations-title"
+                        >
                       <div className="section-heading">
-                        <h2 id="merchant-registrations-title">Merchant access</h2>
-                        <span className="subtle">Approval grants API access. Payments also require a connected provider account.</span>
+                            <h2 id="merchant-registrations-title">
+                              Merchant access
+                            </h2>
+                            <span className="subtle">
+                              Approval grants API access. Payments also require
+                              a connected provider account.
+                            </span>
                       </div>
                       <div className="registration-list">
                         {data.registrations.map((registration) => {
                           const tenantHasKey = data.credentials.some(
-                            (credential) => credential.tenant_id === registration.tenant_id && !credential.revoked
+                                (credential) =>
+                                  credential.tenant_id ===
+                                    registration.tenant_id &&
+                                  !credential.revoked
                           )
                           return (
-                            <article className="registration-row" key={registration.id}>
+                                <article
+                                  className="registration-row"
+                                  key={registration.id}
+                                >
                               <div className="registration-info">
                                 <h3>{registration.business_name}</h3>
-                                <p>{registration.owner_name} · <a className="inline-link" href={`mailto:${registration.email}`}>{registration.email}</a></p>
+                                    <p>
+                                      {registration.owner_name} ·{" "}
+                                      <a
+                                        className="inline-link"
+                                        href={`mailto:${registration.email}`}
+                                      >
+                                        {registration.email}
+                                      </a>
+                                    </p>
                                 <p className="registration-status">
                                   <span>Status: {registration.status}</span>
-                                  <span>Stripe: {registration.provider_status === "not_connected" ? "Not connected" : registration.provider_status === "charges_pending" ? "Setup in progress" : registration.provider_status === "connected" ? `Connected${registration.provider_mode ? ` · ${registration.provider_mode === "test" ? "test" : "live"} mode` : ""}` : "Disconnected"}</span>
+                                      <span>
+                                        Stripe:{" "}
+                                        {registration.provider_status ===
+                                        "not_connected"
+                                          ? "Not connected"
+                                          : registration.provider_status ===
+                                              "charges_pending"
+                                            ? "Setup in progress"
+                                            : registration.provider_status ===
+                                                "connected"
+                                              ? `Connected${registration.provider_mode ? ` · ${registration.provider_mode === "test" ? "test" : "live"} mode` : ""}`
+                                              : "Disconnected"}
+                                      </span>
                                 </p>
                                 {registration.status === "approved" && (
                                   <p className="registration-note">
-                                    {registration.provider_status === "connected" && registration.provider_mode === "live"
+                                        {registration.provider_status ===
+                                          "connected" &&
+                                        registration.provider_mode === "live"
                                       ? "Stripe is connected in live mode. Payment eligibility is checked again when each payment is created."
-                                      : registration.provider_status === "connected"
+                                          : registration.provider_status ===
+                                              "connected"
                                         ? "Stripe is connected in test mode. Live payments remain unavailable until a live provider account is separately verified."
-                                        : registration.provider_status === "charges_pending"
+                                            : registration.provider_status ===
+                                                "charges_pending"
                                           ? "Stripe setup is incomplete. Payments remain unavailable until the account is verified."
                                       : "API access is approved. Processor payments stay unavailable until the merchant’s Stripe account is connected and verified."}
                                   </p>
                                 )}
-                                {registration.review_reason && <p className="registration-note">Review note: {registration.review_reason}</p>}
+                                    {registration.review_reason && (
+                                      <p className="registration-note">
+                                        Review note:{" "}
+                                        {registration.review_reason}
+                                      </p>
+                                    )}
                               </div>
                               <div className="registration-actions">
                                 {registration.status === "pending" ? (
                                   <>
-                                    <Button variant="secondary" disabled={busy} onClick={() => setRegistrationReview({ registration, decision: "reject" })}>Reject</Button>
-                                    <Button disabled={busy} onClick={() => setRegistrationReview({ registration, decision: "approve" })}>Approve merchant</Button>
+                                        <Button
+                                          variant="secondary"
+                                          disabled={busy}
+                                          onClick={() =>
+                                            setRegistrationReview({
+                                              registration,
+                                              decision: "reject",
+                                            })
+                                          }
+                                        >
+                                          Reject
+                                        </Button>
+                                        <Button
+                                          disabled={busy}
+                                          onClick={() =>
+                                            setRegistrationReview({
+                                              registration,
+                                              decision: "approve",
+                                            })
+                                          }
+                                        >
+                                          Approve merchant
+                                        </Button>
                                   </>
                                 ) : registration.status === "approved" ? (
                                   <>
                                     <Button
-                                      variant={registration.provider_status === "connected" ? "secondary" : "default"}
-                                      disabled={providerBusyTenant === registration.tenant_id}
-                                      onClick={() => registration.provider_status === "connected" ? disconnectTenant(registration.tenant_id, registration.business_name) : connectTenant(registration.tenant_id)}
+                                          variant={
+                                            registration.provider_status ===
+                                            "connected"
+                                              ? "secondary"
+                                              : "default"
+                                          }
+                                          disabled={
+                                            providerBusyTenant ===
+                                            registration.tenant_id
+                                          }
+                                          onClick={() =>
+                                            registration.provider_status ===
+                                            "connected"
+                                              ? disconnectTenant(
+                                                  registration.tenant_id,
+                                                  registration.business_name
+                                                )
+                                              : connectTenant(
+                                                  registration.tenant_id
+                                                )
+                                          }
                                     >
-                                      {providerBusyTenant === registration.tenant_id
+                                          {providerBusyTenant ===
+                                          registration.tenant_id
                                         ? "Working…"
-                                        : registration.provider_status === "connected"
+                                            : registration.provider_status ===
+                                                "connected"
                                           ? "Disconnect Stripe"
-                                          : registration.provider_status === "charges_pending"
+                                              : registration.provider_status ===
+                                                  "charges_pending"
                                             ? "Continue Stripe setup"
                                             : "Connect Stripe"}
                                     </Button>
-                                    <Button variant={tenantHasKey ? "secondary" : "default"} onClick={() => openKey("developer", { id: registration.tenant_id, name: registration.business_name })}>
-                                      {tenantHasKey ? "Issue another API key" : "Issue API key"}
+                                        <Button
+                                          variant={
+                                            tenantHasKey
+                                              ? "secondary"
+                                              : "default"
+                                          }
+                                          onClick={() =>
+                                            openKey("developer", {
+                                              id: registration.tenant_id,
+                                              name: registration.business_name,
+                                            })
+                                          }
+                                        >
+                                          {tenantHasKey
+                                            ? "Issue another API key"
+                                            : "Issue API key"}
                                     </Button>
                                     <Button
                                       variant="secondary"
-                                      disabled={inviteBusyTenant === registration.tenant_id}
-                                      onClick={() => void inviteMerchant(registration)}
+                                          disabled={
+                                            inviteBusyTenant ===
+                                            registration.tenant_id
+                                          }
+                                          onClick={() =>
+                                            void inviteMerchant(registration)
+                                          }
                                     >
-                                      {inviteBusyTenant === registration.tenant_id ? "Creating invite…" : "Create merchant invite"}
+                                          {inviteBusyTenant ===
+                                          registration.tenant_id
+                                            ? "Creating invite…"
+                                            : "Create merchant invite"}
                                     </Button>
                                   </>
                                 ) : (
@@ -1755,7 +3182,10 @@ export default function Console() {
                                   ? "Create checkouts"
                                   : "Read-only access"}
                             </p>
-                            <p>Key mode: {keyModeLabel(k.provider_mode ?? "sandbox")}</p>
+                              <p>
+                                Key mode:{" "}
+                                {keyModeLabel(k.provider_mode ?? "sandbox")}
+                              </p>
                             <code>{k.prefix}••••</code>
                           </div>
                           <div className="agent-limits">
@@ -1765,7 +3195,9 @@ export default function Console() {
                             <span>
                               Autonomous refund allowance{" "}
                               <b>
-                                {money(Math.max(0, k.refund_budget - k.spent))}{" "}
+                                  {money(
+                                    Math.max(0, k.refund_budget - k.spent)
+                                  )}{" "}
                                 left
                               </b>
                             </span>
@@ -1854,14 +3286,35 @@ export default function Console() {
                         Read the API reference{" "}
                         <HugeiconsIcon icon={ArrowUpRight01Icon} size={16} />
                       </a>
-                      <a href="/openapi.json" target="_blank" rel="noreferrer">
+                        <a
+                          href="/openapi.json"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
                         OpenAPI specification{" "}
                         <HugeiconsIcon icon={ArrowUpRight01Icon} size={16} />
                       </a>
-                      <small>Install the separate <a href="https://github.com/pkyanam/agora-cli" target="_blank" rel="noreferrer">Agora CLI repository</a>.</small>
+                        <small>
+                          Install the separate{" "}
+                          <a
+                            href="https://github.com/pkyanam/agora-cli"
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Agora CLI repository
+                          </a>
+                          .
+                        </small>
                     </div>
                   </div>
-                  {authRole === "owner" ? <OutgoingWebhooks /> : <p role="status" className="form-note">Outgoing webhook endpoints can be managed by the workspace owner.</p>}
+                    {authRole === "owner" ? (
+                      <OutgoingWebhooks />
+                    ) : (
+                      <p role="status" className="form-note">
+                        Outgoing webhook endpoints can be managed by the
+                        workspace owner.
+                      </p>
+                    )}
                   <section className="keys-section">
                     <div className="section-heading">
                       <h2>API keys</h2>
@@ -1881,6 +3334,7 @@ export default function Console() {
                             <TableHead>Key</TableHead>
                             <TableHead>Mode</TableHead>
                             <TableHead>Access</TableHead>
+                              <TableHead>Limits</TableHead>
                             <TableHead>Status</TableHead>
                             <TableHead />
                           </TableRow>
@@ -1890,15 +3344,28 @@ export default function Console() {
                             <TableRow key={k.id}>
                               <TableCell>
                                 {k.name}
-                                <small className="subtle block">{k.kind}</small>
+                                  <small className="subtle block">
+                                    {k.kind}
+                                  </small>
                               </TableCell>
                               <TableCell>
                                 <code>{k.prefix}••••</code>
                               </TableCell>
-                              <TableCell>{keyModeLabel(k.provider_mode)}</TableCell>
+                                <TableCell>
+                                  {keyModeLabel(k.provider_mode)}
+                                </TableCell>
                               <TableCell>
                                 {k.scopes.length} permissions
                               </TableCell>
+                                <TableCell>
+                                  <small>
+                                    Per payment: {money(k.max_amount)}
+                                  </small>
+                                  <small className="subtle block">
+                                    Refund budget: {money(k.refund_budget)} ·
+                                    used {money(k.spent)}
+                                  </small>
+                                </TableCell>
                               <TableCell>
                                 {k.revoked ? "Revoked" : "Active"}
                               </TableCell>
@@ -1933,7 +3400,8 @@ export default function Console() {
                       </Button>
                     </div>
                     <p className="subtle mb-5">
-                      Persisted payment, refund, approval, and provider events.
+                        Persisted payment, refund, approval, and provider
+                        events.
                     </p>
                     {data.events.slice(0, 12).map((e) => (
                       <div className="event-row" key={e.id}>
@@ -1942,10 +3410,13 @@ export default function Console() {
                         <span>{e.actor}</span>
                         <time>
                           {date(e.created_at)} ·{" "}
-                          {new Date(e.created_at).toLocaleTimeString("en-US", {
+                            {new Date(e.created_at).toLocaleTimeString(
+                              "en-US",
+                              {
                             hour: "2-digit",
                             minute: "2-digit",
-                          })}
+                              }
+                            )}
                         </time>
                       </div>
                     ))}
@@ -1975,6 +3446,7 @@ export default function Console() {
         onOpenChange={(open) => {
           if (!open && !busy) {
             setDialog(null)
+            setEditingProduct(null)
             setSecret("")
             setKeyTenantId("")
             setKeyTenantName("")
@@ -1988,8 +3460,12 @@ export default function Console() {
                 ? created
                   ? "Your checkout is ready."
                   : "Create a payment"
+                : dialog === "quote"
+                  ? "Create a quote"
                     : dialog === "product"
-                  ? "New product"
+                    ? editingProduct
+                      ? "Edit product"
+                      : "New product"
                   : secret
                     ? keyTenantName
                         ? `${workspaceKeyModeLabel(data)} key for ${keyTenantName}`
@@ -2009,8 +3485,12 @@ export default function Console() {
                     : data?.provider_mode
                       ? `A hosted checkout will open with the configured Stripe ${data.provider_mode} account. Payment status follows verified provider events.`
                       : "Provider mode is unavailable. Check configuration before creating a payment."
+                : dialog === "quote"
+                  ? "Review this fixed-price quote before accepting it. Acceptance creates an order and hosted checkout; no card details enter Agora."
                 : dialog === "product"
-                ? "Set a fixed price in USD."
+                    ? editingProduct
+                      ? `Editing creates catalog version ${(editingProduct.version ?? 1) + 1}. Existing quotes remain unchanged.`
+                      : "Set a fixed price in USD."
                   : !secret && !keyIssuanceAvailable
                     ? keyIssuanceUnavailableMessage
                   : secret
@@ -2027,7 +3507,16 @@ export default function Console() {
                   <span>{created.product_name}</span>
                   <strong>{money(created.amount)}</strong>
                   <code>{created.id}</code>
-                  {created.checkout_url && <a className="checkout-share-link" href={created.checkout_url} target="_blank" rel="noreferrer">{created.checkout_url}</a>}
+                  {created.checkout_url && (
+                    <a
+                      className="checkout-share-link"
+                      href={created.checkout_url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {created.checkout_url}
+                    </a>
+                  )}
                 </div>
                 <Button
                   onClick={() => {
@@ -2049,7 +3538,9 @@ export default function Console() {
                 </Button>
               </div>
             ) : !checkoutAvailable ? (
-              <p className="form-note" role="status">{checkoutUnavailableMessage}</p>
+              <p className="form-note" role="status">
+                {checkoutUnavailableMessage}
+              </p>
             ) : (
               <form
                 className="form-stack"
@@ -2107,65 +3598,175 @@ export default function Console() {
                 </Button>
               </form>
             ))}
-          {dialog === "product" && (
-            <form
-              className="form-stack"
-              onSubmit={(e) => {
-                e.preventDefault()
-                const f = new FormData(e.currentTarget)
-                perform(async () => {
-                  await action("create_product", {
-                    name: f.get("name"),
-                    description: f.get("description"),
-                    amount: Math.round(Number(f.get("amount")) * 100),
-                    currency: "usd",
-                  })
-                  setDialog(null)
-                  toast.success("Product created")
-                })
-              }}
-            >
+          {dialog === "quote" && (
+            <form className="form-stack" onSubmit={(e) => void createQuote(e)}>
               <div className="field">
-                <Label htmlFor="product-name">Product name</Label>
+                <Label htmlFor="quote-customer-name">Customer name</Label>
                 <Input
-                  id="product-name"
-                  name="name"
+                  id="quote-customer-name"
+                  name="customer_name"
                   required
                   maxLength={120}
-                  placeholder="Design consultation"
                 />
               </div>
               <div className="field">
-                <Label htmlFor="description">
-                  Description <span className="optional">optional</span>
+                <Label htmlFor="quote-customer-email">
+                  Email <span className="optional">optional</span>
                 </Label>
-                <Textarea
-                  id="description"
-                  name="description"
-                  maxLength={400}
-                  placeholder="A few words about what you’re selling."
+                <Input
+                  id="quote-customer-email"
+                  name="customer_email"
+                  type="email"
+                  maxLength={254}
+                />
+              </div>
+              {quoteLines.map((line, index) => (
+                <div className="field" key={index}>
+                  <Label>Item {index + 1}</Label>
+                  <div className="button-row">
+                    <select
+                      aria-label={`Quote item ${index + 1}`}
+                      value={line.product_id}
+                      onChange={(e) =>
+                        setQuoteLines((lines) =>
+                          lines.map((x, i) =>
+                            i === index
+                              ? { ...x, product_id: e.target.value }
+                              : x
+                          )
+                        )
+                      }
+                    >
+                      {data?.products
+                        .filter((p) => !p.archived_at)
+                        .map((p) => (
+                          <option value={p.id} key={p.id}>
+                            {p.name} · {money(p.amount)}
+                          </option>
+                        ))}
+                    </select>
+                    <Input
+                      aria-label={`Quantity ${index + 1}`}
+                      type="number"
+                      min="1"
+                      max="1000"
+                      value={line.quantity}
+                      onChange={(e) =>
+                        setQuoteLines((lines) =>
+                          lines.map((x, i) =>
+                            i === index
+                              ? {
+                                  ...x,
+                                  quantity: Math.max(
+                                    1,
+                                    Math.min(1000, Number(e.target.value) || 1)
+                                  ),
+                                }
+                              : x
+                          )
+                        )
+                      }
+                />
+                    {quoteLines.length > 1 && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        onClick={() =>
+                          setQuoteLines((lines) =>
+                            lines.filter((_, i) => i !== index)
+                          )
+                        }
+                      >
+                        Remove
+                      </Button>
+                    )}
+              </div>
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={quoteLines.length >= 20}
+                onClick={() => {
+                  const p = data?.products.find((x) => !x.archived_at)
+                  if (p)
+                    setQuoteLines((lines) => [
+                      ...lines,
+                      { product_id: p.id, quantity: 1 },
+                    ])
+                }}
+              >
+                Add item
+              </Button>
+              <div className="field">
+                <Label htmlFor="quote-discount">
+                  Discount in USD <span className="optional">optional</span>
+                </Label>
+                <Input
+                  id="quote-discount"
+                  name="discount_amount"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  defaultValue="0"
                 />
               </div>
               <div className="field">
-                <Label htmlFor="amount">Price in USD</Label>
-                <Input
-                  id="amount"
-                  name="amount"
-                  type="number"
-                  min="0.01"
-                  max="100000"
-                  step="0.01"
-                  required
-                  placeholder="49.00"
-                />
+                <Label htmlFor="quote-expiry">Quote expires</Label>
+                <select
+                  id="quote-expiry"
+                  name="expires_in_seconds"
+                  defaultValue="604800"
+                >
+                  <option value="3600">In 1 hour</option>
+                  <option value="86400">In 1 day</option>
+                  <option value="604800">In 7 days</option>
+                  <option value="2592000">In 30 days</option>
+                </select>
               </div>
               <p className="form-note">
-                One-time price. Create a new product if your price changes.
+                Prices and product names are snapshotted when created. The quote
+                can’t change if the catalog changes later.
               </p>
-              <Button disabled={busy} type="submit">
-                {busy ? "Creating…" : "Create product"}
+              {salesError && (
+                <p className="form-note" role="alert">
+                  {salesError}
+                </p>
+              )}
+              <Button
+                disabled={salesBusy || quoteLines.length === 0}
+                type="submit"
+              >
+                {salesBusy ? "Creating…" : "Create quote"}
               </Button>
             </form>
+          )}
+          {dialog === "product" && (
+            <ProductEditor
+              product={editingProduct}
+              onSave={async (payload) => {
+                try {
+                  if (payload.product_id) {
+                    await action("update_product", payload)
+                    toast.success(
+                      "Product updated. Existing quotes keep their original price snapshot."
+                    )
+                  } else {
+                    await action("create_product", payload)
+                    toast.success("Product created")
+                  }
+                  setDialog(null)
+                  setEditingProduct(null)
+                } catch (reason) {
+                  toast.error(
+                    reason instanceof Error
+                      ? reason.message
+                      : "Product could not be saved."
+                  )
+                  throw reason
+                }
+              }}
+            />
           )}
           {dialog === "key" &&
             (secret ? (
@@ -2182,9 +3783,26 @@ export default function Console() {
                 {!keyTenantId && keyKind === "developer" && (
                   <div className="cli-link-step">
                     <strong>Link the Agora CLI</strong>
-                    <p>Run this command, then paste the API key at the hidden prompt. Agora saves it locally with owner-only file permissions.</p>
-                    <code>agora auth login --url {typeof location !== "undefined" ? location.origin : "https://agora.example.com"}</code>
-                    <Button type="button" variant="secondary" onClick={() => copy(`agora auth login --url ${location.origin}`)}>Copy login command <HugeiconsIcon icon={Copy01Icon} /></Button>
+                    <p>
+                      Run this command, then paste the API key at the hidden
+                      prompt. Agora saves it locally with owner-only file
+                      permissions.
+                    </p>
+                    <code>
+                      agora auth login --url{" "}
+                      {typeof location !== "undefined"
+                        ? location.origin
+                        : "https://agora.example.com"}
+                    </code>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() =>
+                        copy(`agora auth login --url ${location.origin}`)
+                      }
+                    >
+                      Copy login command <HugeiconsIcon icon={Copy01Icon} />
+                    </Button>
                   </div>
                 )}
                 <Button
@@ -2195,14 +3813,17 @@ export default function Console() {
                     setSecret("")
                     setKeyTenantId("")
                     setKeyTenantName("")
-                    if (!tenantKey) navigate(keyKind === "agent" ? "Agents" : "Developers")
+                    if (!tenantKey)
+                      navigate(keyKind === "agent" ? "Agents" : "Developers")
                   }}
                 >
                   Done
                 </Button>
               </div>
             ) : !keyIssuanceAvailable ? (
-              <p className="form-note" role="status">{keyIssuanceUnavailableMessage}</p>
+              <p className="form-note" role="status">
+                {keyIssuanceUnavailableMessage}
+              </p>
             ) : (
               <form
                 className="form-stack"
@@ -2210,15 +3831,23 @@ export default function Console() {
                   e.preventDefault()
                   const f = new FormData(e.currentTarget)
                   perform(async () => {
-                    const k = await action<ApiResponse & { secret?: string }>("create_key", {
+                    const k = await action<ApiResponse & { secret?: string }>(
+                      "create_key",
+                      {
                       name: f.get("name"),
                       kind: keyKind,
                       scopes: permissionSets[permission],
                       max_amount: Math.round(Number(f.get("max")) * 100),
-                      refund_budget: Math.round(Number(f.get("budget")) * 100),
+                        refund_budget: Math.round(
+                          Number(f.get("budget")) * 100
+                        ),
                       ...(keyTenantId ? { tenant_id: keyTenantId } : {}),
-                    })
-                    if (typeof k.secret !== "string") throw new Error("The API key response was incomplete. Contact support.")
+                      }
+                    )
+                    if (typeof k.secret !== "string")
+                      throw new Error(
+                        "The API key response was incomplete. Contact support."
+                      )
                     setSecret(k.secret)
                     toast.success("Key created")
                   })
@@ -2316,17 +3945,36 @@ export default function Console() {
           <DialogHeader>
             <DialogTitle>Invite {merchantInvite?.business_name}</DialogTitle>
             <DialogDescription>
-              This one-time link lets {merchantInvite?.email} set a password and authenticator. It expires {merchantInvite ? new Date(merchantInvite.expires_at).toLocaleString() : ""}. Share it privately; anyone with the link can claim this merchant account.
+              This one-time link lets {merchantInvite?.email} set a password and
+              authenticator. It expires{" "}
+              {merchantInvite
+                ? new Date(merchantInvite.expires_at).toLocaleString()
+                : ""}
+              . Share it privately; anyone with the link can claim this merchant
+              account.
             </DialogDescription>
           </DialogHeader>
           {merchantInvite && (
             <div className="form-stack">
               <div className="field">
-                <Label htmlFor="merchant-invite-url">One-time invite link</Label>
-                <Input id="merchant-invite-url" readOnly value={merchantInvite.invite_url} onFocus={(event) => event.currentTarget.select()} />
+                <Label htmlFor="merchant-invite-url">
+                  One-time invite link
+                </Label>
+                <Input
+                  id="merchant-invite-url"
+                  readOnly
+                  value={merchantInvite.invite_url}
+                  onFocus={(event) => event.currentTarget.select()}
+                />
               </div>
-              <p className="form-note">The link is shown once here. Copy it before closing this window; it is not emailed automatically.</p>
-              <Button onClick={() => copy(merchantInvite.invite_url)}>Copy invite link <HugeiconsIcon icon={Copy01Icon} aria-hidden="true" /></Button>
+              <p className="form-note">
+                The link is shown once here. Copy it before closing this window;
+                it is not emailed automatically.
+              </p>
+              <Button onClick={() => copy(merchantInvite.invite_url)}>
+                Copy invite link{" "}
+                <HugeiconsIcon icon={Copy01Icon} aria-hidden="true" />
+              </Button>
             </div>
           )}
         </DialogContent>
@@ -2351,9 +3999,19 @@ export default function Console() {
             </DialogDescription>
           </DialogHeader>
           <div className="registration-confirm-actions">
-            <Button variant="secondary" disabled={busy} onClick={() => setRegistrationReview(null)}>Cancel</Button>
             <Button
-              variant={registrationReview?.decision === "reject" ? "destructive" : "default"}
+              variant="secondary"
+              disabled={busy}
+              onClick={() => setRegistrationReview(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant={
+                registrationReview?.decision === "reject"
+                  ? "destructive"
+                  : "default"
+              }
               disabled={busy || !registrationReview}
               onClick={() => {
                 const review = registrationReview
@@ -2364,11 +4022,19 @@ export default function Console() {
                     decision: review.decision,
                   })
                   setRegistrationReview(null)
-                  toast.success(review.decision === "approve" ? "Merchant approved" : "Registration rejected")
+                  toast.success(
+                    review.decision === "approve"
+                      ? "Merchant approved"
+                      : "Registration rejected"
+                  )
                 })
               }}
             >
-              {busy ? "Saving…" : registrationReview?.decision === "approve" ? "Approve merchant" : "Reject registration"}
+              {busy
+                ? "Saving…"
+                : registrationReview?.decision === "approve"
+                  ? "Approve merchant"
+                  : "Reject registration"}
             </Button>
           </div>
         </DialogContent>
@@ -2395,7 +4061,9 @@ export default function Console() {
               <dl>
                 <div>
                   <dt>Created</dt>
-                  <dd>{new Date(selectedCurrent.created_at).toLocaleString()}</dd>
+                  <dd>
+                    {new Date(selectedCurrent.created_at).toLocaleString()}
+                  </dd>
                 </div>
                 <div>
                   <dt>Customer</dt>
@@ -2419,27 +4087,57 @@ export default function Console() {
                 </div>
                 <div>
                   <dt>Remaining refundable</dt>
-                  <dd>{money(Math.max(0, selectedCurrent.amount - selectedCurrent.refunded))}</dd>
+                  <dd>
+                    {money(
+                      Math.max(
+                        0,
+                        selectedCurrent.amount - selectedCurrent.refunded
+                      )
+                    )}
+                  </dd>
                 </div>
                 <div>
                   <dt>Payment mode</dt>
-                  <dd>{selectedCurrent.provider === "stripe"
+                  <dd>
+                    {selectedCurrent.provider === "stripe"
                     ? selectedCurrent.provider_mode
                       ? `Stripe ${selectedCurrent.provider_mode}`
                       : "Stripe · mode unavailable"
                     : selectedCurrent.provider === "sandbox"
                       ? "Sandbox"
-                      : "Provider unavailable"}</dd>
+                        : "Provider unavailable"}
+                  </dd>
                 </div>
               </dl>
               {selectedCurrent.provider === "stripe" && (
                 <p className="form-note" role="note">
-                  Agora has no Radar risk signal for this payment record. If Radar is enabled, review available signals in the{" "}
-                  <a href="https://dashboard.stripe.com/" target="_blank" rel="noreferrer">Stripe Dashboard</a>.
+                  Agora has no Radar risk signal for this payment record. If
+                  Radar is enabled, review available signals in the{" "}
+                  <a
+                    href="https://dashboard.stripe.com/"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Stripe Dashboard
+                  </a>
+                  .
                 </p>
               )}
-              <Button type="button" variant="secondary" disabled={busy} onClick={() => void setArchivedRecord("payments", selectedCurrent.id, !selectedCurrent.archived_at)}>
-                {selectedCurrent.archived_at ? "Restore transaction" : "Archive transaction"}
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={busy}
+                onClick={() =>
+                  void setArchivedRecord(
+                    "payments",
+                    selectedCurrent.id,
+                    !selectedCurrent.archived_at
+                  )
+                }
+              >
+                {selectedCurrent.archived_at
+                  ? "Restore transaction"
+                  : "Archive transaction"}
               </Button>
               {selectedCurrent.sample === 0 &&
                 selectedCurrent.status === "pending" &&
@@ -2467,19 +4165,24 @@ export default function Console() {
                   </div>
                 )}
               {selectedCurrent.status === "succeeded" &&
-                selectedCurrent.refunded < selectedCurrent.amount && (
-                  selectedCurrent.provider === "stripe" && data?.provider_status === "setup_required" ? (
+                selectedCurrent.refunded < selectedCurrent.amount &&
+                (selectedCurrent.provider === "stripe" &&
+                data?.provider_status === "setup_required" ? (
                     <p className="form-note" role="status">
-                      Refund actions are unavailable until Stripe setup is complete. No local refund record was created.
+                    Refund actions are unavailable until Stripe setup is
+                    complete. No local refund record was created.
                     </p>
-                  ) : <form
+                ) : (
+                  <form
                     className="form-stack refund-form"
                     key={selectedCurrent.refunded}
                     onSubmit={(e) => {
                       e.preventDefault()
                       const f = new FormData(e.currentTarget)
                       perform(async () => {
-                        const result = await action<ApiResponse & { provider?: string; status?: string }>("refund", {
+                        const result = await action<
+                          ApiResponse & { provider?: string; status?: string }
+                        >("refund", {
                           payment_id: selectedCurrent.id,
                           amount: Math.round(Number(f.get("amount")) * 100),
                           reason: f.get("reason"),
@@ -2495,13 +4198,22 @@ export default function Console() {
                     }}
                   >
                     <h2>Issue a refund</h2>
-                    {(selectedCurrent as Payment & { provider?: string }).provider === "stripe" && !selectedCurrent.provider_mode ? (
-                      <p className="form-note" role="status">Stripe mode is unknown. Refunds are disabled until the payment mode can be verified.</p>
+                    {(selectedCurrent as Payment & { provider?: string })
+                      .provider === "stripe" &&
+                    !selectedCurrent.provider_mode ? (
+                      <p className="form-note" role="status">
+                        Stripe mode is unknown. Refunds are disabled until the
+                        payment mode can be verified.
+                      </p>
                     ) : (
                     <>
-                    {(selectedCurrent as Payment & { provider?: string }).provider === "stripe" && (
+                        {(selectedCurrent as Payment & { provider?: string })
+                          .provider === "stripe" && (
                       <p className="form-note" role="status">
-                        Stripe {selectedCurrent.provider_mode} mode. The refund is sent to the same connected account; final status follows Stripe’s response and verified events.
+                            Stripe {selectedCurrent.provider_mode} mode. The
+                            refund is sent to the same connected account; final
+                            status follows Stripe’s response and verified
+                            events.
                       </p>
                     )}
                     <div className="field">
@@ -2514,11 +4226,13 @@ export default function Console() {
                         min="0.01"
                         step="0.01"
                         max={
-                          (selectedCurrent.amount - selectedCurrent.refunded) /
+                              (selectedCurrent.amount -
+                                selectedCurrent.refunded) /
                           100
                         }
                         defaultValue={(
-                          (selectedCurrent.amount - selectedCurrent.refunded) /
+                              (selectedCurrent.amount -
+                                selectedCurrent.refunded) /
                           100
                         ).toFixed(2)}
                       />
@@ -2535,14 +4249,23 @@ export default function Console() {
                       />
                     </div>
                     <Button type="submit" disabled={busy}>
-                      {busy ? "Submitting…" : (selectedCurrent as Payment & { provider?: string }).provider === "stripe" ? "Submit Stripe refund" : "Confirm refund"}
+                          {busy
+                            ? "Submitting…"
+                            : (
+                                  selectedCurrent as Payment & {
+                                    provider?: string
+                                  }
+                                ).provider === "stripe"
+                              ? "Submit Stripe refund"
+                              : "Confirm refund"}
                     </Button>
                     </>
                     )}
                   </form>
-                )}
+                ))}
               <p className="form-note mt-6">
-                {(selectedCurrent as Payment & { provider?: string }).provider === "stripe"
+                {(selectedCurrent as Payment & { provider?: string })
+                  .provider === "stripe"
                   ? "Processor status is updated by verified provider events."
                   : "Test mode record. No live funds have been collected or returned."}
               </p>

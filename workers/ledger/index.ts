@@ -35,7 +35,8 @@ interface Env {
 
 const schema = `
 PRAGMA foreign_keys=ON;
-CREATE TABLE IF NOT EXISTS products(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,amount INTEGER NOT NULL CHECK(amount>0),currency TEXT NOT NULL DEFAULT 'usd' CHECK(currency='usd'),created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS products(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,amount INTEGER NOT NULL CHECK(amount>0),currency TEXT NOT NULL DEFAULT 'usd' CHECK(currency='usd'),created_at TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS product_versions(product_id TEXT NOT NULL,version INTEGER NOT NULL,name TEXT NOT NULL,description TEXT NOT NULL,amount INTEGER NOT NULL CHECK(amount>0),currency TEXT NOT NULL DEFAULT 'usd',created_at TEXT NOT NULL,updated_by TEXT NOT NULL,PRIMARY KEY(product_id,version));
 CREATE TABLE IF NOT EXISTS payments(id TEXT PRIMARY KEY,product_id TEXT NOT NULL REFERENCES products(id),product_name TEXT NOT NULL,customer TEXT NOT NULL,amount INTEGER NOT NULL CHECK(amount>0),refunded INTEGER NOT NULL DEFAULT 0 CHECK(refunded>=0 AND refunded<=amount),currency TEXT NOT NULL DEFAULT 'usd',status TEXT NOT NULL CHECK(status IN ('pending','succeeded','failed')),actor TEXT NOT NULL,created_at TEXT NOT NULL,checkout_token TEXT NOT NULL UNIQUE,sample INTEGER NOT NULL DEFAULT 0,provider TEXT NOT NULL DEFAULT 'sandbox',provider_mode TEXT,provider_session_id TEXT,provider_checkout_url TEXT,provider_payment_intent TEXT,provider_account_id TEXT);
 CREATE TABLE IF NOT EXISTS credentials(id TEXT PRIMARY KEY,name TEXT NOT NULL,kind TEXT NOT NULL,prefix TEXT NOT NULL,hash TEXT NOT NULL UNIQUE,scopes TEXT NOT NULL,max_amount INTEGER NOT NULL,refund_budget INTEGER NOT NULL,spent INTEGER NOT NULL DEFAULT 0,revoked INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,provider_mode TEXT NOT NULL DEFAULT 'sandbox');
 CREATE TABLE IF NOT EXISTS refunds(id TEXT PRIMARY KEY,payment_id TEXT NOT NULL REFERENCES payments(id),amount INTEGER NOT NULL CHECK(amount>0),reason TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'succeeded',provider_refund_id TEXT,provider_mode TEXT,credential_id TEXT);
@@ -62,6 +63,15 @@ CREATE INDEX IF NOT EXISTS webhook_delivery_due ON webhook_deliveries(status,nex
 CREATE INDEX IF NOT EXISTS webhook_delivery_endpoint ON webhook_deliveries(endpoint_id,created_at,id);
 CREATE TABLE IF NOT EXISTS webhook_attempts(id TEXT PRIMARY KEY,delivery_id TEXT NOT NULL,attempt INTEGER NOT NULL,started_at TEXT NOT NULL,finished_at TEXT,http_status INTEGER,duration_ms INTEGER,error TEXT,response_excerpt TEXT NOT NULL DEFAULT '',UNIQUE(delivery_id,attempt));
 CREATE TABLE IF NOT EXISTS stripe_risk_signals(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,payment_id TEXT NOT NULL,mode TEXT NOT NULL CHECK(mode IN ('test','live')),account_id TEXT,kind TEXT NOT NULL CHECK(kind IN ('early_fraud_warning','review')),state TEXT NOT NULL,actionable INTEGER,fraud_type TEXT,reason TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,event_id TEXT NOT NULL UNIQUE);
+CREATE TABLE IF NOT EXISTS customers(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,name TEXT NOT NULL,email TEXT,email_normalized TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS quotes(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,customer_id TEXT NOT NULL REFERENCES customers(id),status TEXT NOT NULL CHECK(status IN ('open','accepted','expired','cancelled')),currency TEXT NOT NULL DEFAULT 'usd',subtotal_amount INTEGER NOT NULL,discount_amount INTEGER NOT NULL DEFAULT 0,total_amount INTEGER NOT NULL,expires_at TEXT NOT NULL,created_at TEXT NOT NULL,created_by TEXT NOT NULL,accepted_at TEXT,order_id TEXT,token_hash TEXT,token_ciphertext TEXT,creator_credential_id TEXT,amount_limit_snapshot INTEGER,provider_mode TEXT);
+CREATE TABLE IF NOT EXISTS quote_items(id TEXT PRIMARY KEY,quote_id TEXT NOT NULL REFERENCES quotes(id),product_id TEXT NOT NULL,product_name TEXT NOT NULL,catalog_version INTEGER NOT NULL,quantity INTEGER NOT NULL CHECK(quantity>0),unit_amount INTEGER NOT NULL CHECK(unit_amount>0),line_total INTEGER NOT NULL CHECK(line_total>0),discount_amount INTEGER NOT NULL DEFAULT 0,net_total INTEGER NOT NULL DEFAULT 1 CHECK(net_total>=0));
+CREATE TABLE IF NOT EXISTS orders(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,quote_id TEXT UNIQUE,customer_id TEXT NOT NULL REFERENCES customers(id),payment_id TEXT UNIQUE,status TEXT NOT NULL CHECK(status IN ('awaiting_payment','paid','cancelled')),currency TEXT NOT NULL DEFAULT 'usd',total_amount INTEGER NOT NULL,created_at TEXT NOT NULL,paid_at TEXT);
+CREATE TABLE IF NOT EXISTS order_items(id TEXT PRIMARY KEY,order_id TEXT NOT NULL REFERENCES orders(id),product_id TEXT NOT NULL,product_name TEXT NOT NULL,catalog_version INTEGER NOT NULL,quantity INTEGER NOT NULL CHECK(quantity>0),unit_amount INTEGER NOT NULL CHECK(unit_amount>0),line_total INTEGER NOT NULL CHECK(line_total>0),discount_amount INTEGER NOT NULL DEFAULT 0,net_total INTEGER NOT NULL DEFAULT 1 CHECK(net_total>=0));
+CREATE TABLE IF NOT EXISTS fulfillments(id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,order_id TEXT NOT NULL UNIQUE REFERENCES orders(id),payment_id TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('awaiting_payment','ready','claimed','completed','failed')),claimed_by TEXT,claimed_at TEXT,completed_at TEXT,note TEXT,attempt_count INTEGER NOT NULL DEFAULT 0,cancelled_at TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS quote_tenant_created ON quotes(tenant_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS order_tenant_created ON orders(tenant_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS fulfillment_tenant_status ON fulfillments(tenant_id,status,created_at DESC);
 CREATE INDEX IF NOT EXISTS stripe_risk_scope ON stripe_risk_signals(tenant_id,mode,created_at,id);
 CREATE INDEX IF NOT EXISTS payment_created ON payments(created_at);
 CREATE INDEX IF NOT EXISTS event_created ON events(created_at);
@@ -127,6 +137,7 @@ export class AgoraLedgerDO extends DurableObject<Env> {
     for (const [table, column, definition] of [
       ['products', 'tenant_id', "TEXT NOT NULL DEFAULT 'owner'"],
       ['products', 'archived_at', 'TEXT'],
+      ['products', 'version', 'INTEGER NOT NULL DEFAULT 1'],
       ['payments', 'tenant_id', "TEXT NOT NULL DEFAULT 'owner'"],
       ['payments', 'archived_at', 'TEXT'],
       ['credentials', 'tenant_id', "TEXT NOT NULL DEFAULT 'owner'"],
@@ -145,12 +156,24 @@ export class AgoraLedgerDO extends DurableObject<Env> {
       ['refunds', 'provider_refund_id', 'TEXT'],
       ['refunds', 'provider_mode', 'TEXT'],
       ['refunds', 'credential_id', 'TEXT'],
+      ['quotes', 'token_hash', 'TEXT'],
+      ['quotes', 'token_ciphertext', 'TEXT'],
+      ['quotes', 'creator_credential_id', 'TEXT'],
+      ['quotes', 'amount_limit_snapshot', 'INTEGER'],
+      ['quotes', 'provider_mode', 'TEXT'],
+      ['quote_items', 'discount_amount', 'INTEGER NOT NULL DEFAULT 0'],
+      ['quote_items', 'net_total', 'INTEGER NOT NULL DEFAULT 1'],
+      ['order_items', 'discount_amount', 'INTEGER NOT NULL DEFAULT 0'],
+      ['order_items', 'net_total', 'INTEGER NOT NULL DEFAULT 1'],
+      ['fulfillments', 'cancelled_at', 'TEXT'],
     ] as const) {
       const columns = ctx.storage.sql.exec(`PRAGMA table_info(${table})`).toArray() as { name: string }[];
       if (!columns.some((item) => item.name === column)) ctx.storage.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
     }
     ctx.storage.sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS tenant_email_unique ON tenants(email COLLATE NOCASE)");
     ctx.storage.sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS merchant_user_email_unique ON merchant_users(email COLLATE NOCASE)");
+    ctx.storage.sql.exec("INSERT OR IGNORE INTO product_versions(product_id,version,name,description,amount,currency,created_at,updated_by) SELECT id,version,name,description,amount,currency,created_at,'migration' FROM products");
+    ctx.storage.sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS customer_email_unique ON customers(tenant_id,email_normalized) WHERE email_normalized IS NOT NULL");
     ctx.storage.sql.exec("INSERT OR IGNORE INTO tenants(id,business_name,email,status,provider,created_at,approved_at) VALUES('owner',?,?,'approved','stripe',?,?)", this.env.AGORA_WORKSPACE_NAME||'Agora workspace',this.env.AGORA_OWNER_EMAIL||'owner@localhost',this.store.now(),this.store.now());
     const mfaMigration = this.service.migrateMfaEncryptionKeys();
     console.info('Agora MFA key migration', {
@@ -179,6 +202,12 @@ export class AgoraLedgerDO extends DurableObject<Env> {
       if (path === '/api/health' && method === 'GET') {
         const readiness=this.service.paymentProviderReadiness();const config=this.service.stripeConfigSummary();
         return json({status:'ok',deployment_type:this.env.AGORA_DEPLOYMENT_TYPE||'community',deployment_target:this.env.AGORA_DEPLOYMENT_TARGET||'cloudflare-worker',current_version:this.env.AGORA_VERSION||'0.0.1',provider:{name:config.provider,mode:config.mode,status:readiness.provider_status,checkout_enabled:readiness.checkout_enabled,webhook_url:config.webhook_url,configured:config.configured[config.mode]}},200,{'X-Request-Id':requestId});
+      }
+      if(path==='/api/quote/review'&&method==='POST'){const body=await bodyOf(request) as {token?:unknown};if(typeof body?.token!=='string')throw new ApiError(404,'not_found','Quote not found.');return json(this.service.reviewPublicQuote(body.token).quote,200,{'Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Request-Id':requestId});}
+      if(path==='/api/quote/accept'&&method==='POST'){
+        const body=await bodyOf(request) as {token?:unknown};if(typeof body?.token!=='string')throw new ApiError(404,'not_found','Quote not found.');const reviewed=this.service.reviewPublicQuote(body.token);const actor={id:`public_quote_customer:${reviewed.guard.tenant_id}`,name:'Customer quote acceptance',scopes:['*'],tenant_id:reviewed.guard.tenant_id};const accepted=this.service.mutate(actor,'public_quote_accept',request.headers.get('idempotency-key'),{token:body.token},()=>this.service.acceptPublicQuote(body.token as string)) as {payment:WorkerPayment;items:Array<{net_total:number;product_name:string;quantity:number}>;quote_id:string;order_id:string};const payment=accepted.payment;const readiness=this.service.paymentProviderReadiness();let publicPay:unknown;
+        if(readiness.provider_status==='sandbox'){publicPay=publicPayment(payment,this.env.AGORA_PUBLIC_ORIGIN);}else{const mode=readiness.provider_mode;if(mode!=='test'&&mode!=='live')throw new ApiError(503,'provider_not_configured','Stripe Checkout is not configured for this quote.');const secret=this.service.stripeSecret(mode,'api');if(!secret||!this.env.AGORA_PUBLIC_ORIGIN)throw new ApiError(503,'provider_not_configured','Stripe Checkout is not configured for this quote.');const connected=payment.tenant_id==='owner'?null:this.service.stripeAccountForTenant(payment.tenant_id,mode);if(payment.tenant_id!=='owner'&&(!connected||connected.status!=='connected'||!connected.charges_enabled))throw new ApiError(409,'merchant_connection_required','The seller’s Stripe account is unavailable.');this.service.prepareStripePayment(payment.id,mode,payment.tenant_id,connected?.account_id||null);const lineItems=accepted.items.filter(item=>item.net_total>0).map(item=>({name:`${item.product_name} × ${item.quantity}`,amount:item.net_total}));const session=await createStripeCheckout(secret,{amount:payment.amount,currency:'usd',productName:payment.product_name,lineItems,paymentId:payment.id,tenantId:payment.tenant_id,successUrl:`${this.env.AGORA_PUBLIC_ORIGIN}/checkout/complete?payment_id=${encodeURIComponent(payment.id)}&session_id={CHECKOUT_SESSION_ID}`,cancelUrl:`${this.env.AGORA_PUBLIC_ORIGIN}/checkout/cancel?payment_id=${encodeURIComponent(payment.id)}`,idempotencyKey:`agora-checkout-${payment.id}`,...(connected?{stripeAccountId:connected.account_id}:{})});this.service.saveStripeSession(payment.id,session,mode,payment.tenant_id,connected?.account_id||null);publicPay=publicPayment({...payment,provider:'stripe',provider_mode:mode},this.env.AGORA_PUBLIC_ORIGIN);}
+        return json({...accepted,payment:publicPay},200,{'Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Request-Id':requestId});
       }
       if (path === '/api/console/stripe-config' && method === 'GET') {
         const actor=this.service.consoleActor(request);if(actor.tenant_id!=='owner')throw new ApiError(403,'permission_denied','Only the workspace owner can configure Stripe.');
@@ -389,6 +418,13 @@ export class AgoraLedgerDO extends DurableObject<Env> {
         const actor = this.service.consoleActor(request, true);
         const handlers: Record<string, () => unknown> = {
           create_product: () => this.service.createProduct(actor, body.payload),
+          create_customer: () => this.service.createCustomer(actor, body.payload),
+          create_quote: () => this.service.createQuote(actor, body.payload),
+          update_product: () => { const payload=body.payload as {product_id?:string;expected_version?:number;name?:string;description?:string;amount?:number};if(typeof payload?.product_id!=='string')throw new ApiError(422,'invalid_request','Provide a product_id.');const {product_id,...input}=payload;return this.service.updateProduct(actor,product_id,input); },
+          claim_fulfillment: () => { const payload=body.payload as {id?:string};if(typeof payload?.id!=='string')throw new ApiError(422,'invalid_request','Provide a fulfillment id.');return this.service.transitionFulfillment(actor,payload.id,'claim',{}); },
+          complete_fulfillment: () => { const payload=body.payload as {id?:string;note?:string};if(typeof payload?.id!=='string')throw new ApiError(422,'invalid_request','Provide a fulfillment id.');return this.service.transitionFulfillment(actor,payload.id,'complete',{note:payload.note}); },
+          fail_fulfillment: () => { const payload=body.payload as {id?:string;note?:string};if(typeof payload?.id!=='string')throw new ApiError(422,'invalid_request','Provide a fulfillment id.');return this.service.transitionFulfillment(actor,payload.id,'fail',{note:payload.note}); },
+          retry_fulfillment: () => { const payload=body.payload as {id?:string;note?:string};if(typeof payload?.id!=='string')throw new ApiError(422,'invalid_request','Provide a fulfillment id.');return this.service.transitionFulfillment(actor,payload.id,'retry',{note:payload.note}); },
           resolve_approval: () => this.service.resolveApproval(actor, body.payload),
           revoke_key: () => this.service.revokeCredential(actor, body.payload),
           review_registration: () => this.service.reviewRegistration(actor, body.payload),
@@ -428,7 +464,9 @@ export class AgoraLedgerDO extends DurableObject<Env> {
         }
         const handler = body.action ? handlers[body.action] : undefined;
         if (!handler || !body.action) throw new ApiError(400, 'invalid_action', 'Unknown console action.');
-        return json(this.service.mutate(actor, body.action, request.headers.get('idempotency-key'), body.payload, handler), 200, { 'X-Request-Id': requestId });
+        const result=this.service.mutate(actor, body.action, request.headers.get('idempotency-key'), body.payload, handler) as Record<string,unknown>;
+        if(body.action==='create_quote'){const quote=result as {id:string;quote_token?:unknown};const {quote_token:_token,...safe}=quote;return json({...safe,quote_url:this.service.quoteShareUrl(actor,quote.id,this.env.AGORA_PUBLIC_ORIGIN),quote_link_available:true},200,{'X-Request-Id':requestId});}
+        return json(result, 200, { 'X-Request-Id': requestId });
       }
 
       if (path === '/api/registrations' && method === 'POST') {
@@ -446,6 +484,25 @@ export class AgoraLedgerDO extends DurableObject<Env> {
         return json(this.service.registerMerchant(body), 201, { 'X-Request-Id': requestId });
       }
 
+      if(path==='/api/v1/account'&&method==='GET'){
+        const actor=this.service.authenticate(request);const readiness=this.service.paymentProviderReadiness();const env=this.service.stripeRuntimeEnvironment();const configuredMode=env.AGORA_PAYMENT_PROVIDER==='stripe'?(readiness.provider_mode||'unconfigured'):'sandbox';const keyMode=actor.credential?.provider_mode||configuredMode;return json({mode:keyMode==='sandbox'?'sandbox':'stripe',provider_status:readiness.provider_status,checkout_enabled:readiness.checkout_enabled,provider_mode:keyMode,configured_mode:configuredMode,mode_matches:keyMode===configuredMode,scopes:actor.scopes,limits:actor.credential?{max_amount:actor.credential.max_amount,refund_budget:actor.credential.refund_budget,spent:actor.credential.spent}:null},200,{'X-Request-Id':requestId});
+      }
+      const salesResource=path.match(/^\/api\/v1\/(customers|quotes|orders|fulfillments)(?:\/([^/]+)(?:\/(receipt|claim|complete|fail|retry|accept))?)?$/);
+      if(salesResource){const [,kind,id,action]=salesResource;const actor=this.service.authenticate(request);const cursor=Number(url.searchParams.get('cursor')||0);const limit=Number(url.searchParams.get('limit')||25);if(!Number.isInteger(cursor)||cursor<0||!Number.isInteger(limit)||limit<1||limit>100)throw new ApiError(422,'invalid_pagination','limit must be 1–100 and cursor a non-negative integer.');const origin=this.env.AGORA_PUBLIC_ORIGIN||url.origin;
+        if(method==='GET'){if(!id){const value=kind==='customers'?this.service.listCustomers(actor,cursor,limit):kind==='quotes'?this.service.listQuotes(actor,cursor,limit):kind==='orders'?this.service.listOrders(actor,cursor,limit):this.service.listFulfillments(actor,cursor,limit,url.searchParams.get('status')||undefined);if(kind==='quotes')return json({...value,data:value.data.map((quote)=>{const quote_url=this.service.quoteShareUrl(actor,quote.id,origin);return{...quote,...(quote_url?{quote_url,quote_link_available:true}:{quote_link_available:false})};})},200,{'X-Request-Id':requestId});return json(value,200,{'X-Request-Id':requestId});}
+          const value=kind==='customers'?this.service.getCustomer(actor,id):kind==='quotes'?this.service.getQuote(actor,id):kind==='orders'?this.service.getOrder(actor,id):this.service.getFulfillment(actor,id);if(kind==='quotes'){const quote_url=this.service.quoteShareUrl(actor,id,origin);return json({...value,...(quote_url?{quote_url,quote_link_available:true}:{quote_link_available:false})},200,{'X-Request-Id':requestId});}if(kind==='orders'&&action==='receipt')return json(this.service.getOrderReceipt(actor,id),200,{'X-Request-Id':requestId});return json(value,200,{'X-Request-Id':requestId});}
+        if(method==='POST'&&!id){const body=await bodyOf(request);if(kind==='customers'){const created=this.service.mutate(actor,`/api/v1/${kind}`,request.headers.get('idempotency-key'),body,()=>this.service.createCustomer(actor,body));return json(created,201,{'X-Request-Id':requestId});}if(kind==='quotes'){const created=this.service.mutate(actor,`/api/v1/${kind}`,request.headers.get('idempotency-key'),body,()=>this.service.createQuote(actor,body)) as {id:string;quote_token?:unknown};const {quote_token:_token,...safe}=created;return json({...safe,quote_url:this.service.quoteShareUrl(actor,created.id,origin),quote_link_available:true},201,{'X-Request-Id':requestId});}throw new ApiError(405,'method_not_allowed','This resource does not support creation.');}
+        if(method==='POST'&&id&&kind==='fulfillments'&&action){if(!request.headers.get('idempotency-key'))throw new ApiError(400,'idempotency_required','Provide an Idempotency-Key.');const body=await bodyOf(request);return json(this.service.mutate(actor,path,request.headers.get('idempotency-key'),body,()=>this.service.transitionFulfillment(actor,id,action as 'claim'|'complete'|'fail'|'retry',body)),200,{'X-Request-Id':requestId});}
+        if(method==='PATCH'&&kind==='fulfillments')throw new ApiError(405,'method_not_allowed','Use a fulfillment action endpoint.');
+        if(method==='POST'&&id&&kind==='quotes'&&action==='accept'){
+          if(!request.headers.get('idempotency-key'))throw new ApiError(400,'idempotency_required','Provide an Idempotency-Key.');const body=await bodyOf(request);const readiness=this.service.paymentProviderReadiness();if(!readiness.checkout_enabled)throw new ApiError(503,'provider_not_configured','Payment acceptance is unavailable until processor setup is complete.');const accepted=this.service.mutate(actor,path,request.headers.get('idempotency-key'),body,()=>this.service.acceptQuote(actor,id)) as {payment:WorkerPayment;items:Array<{net_total:number;product_name:string;quantity:number}>;quote_id:string;order_id:string};const payment=accepted.payment;let publicPay:unknown;
+          if(readiness.provider_status==='sandbox')publicPay=publicPayment(payment,origin);else{const mode=readiness.provider_mode;if(mode!=='test'&&mode!=='live')throw new ApiError(503,'provider_not_configured','Stripe Checkout is not configured for quotes.');requireProviderMode(actor,mode);const secret=this.service.stripeSecret(mode,'api');if(!secret||!this.env.AGORA_PUBLIC_ORIGIN)throw new ApiError(503,'provider_not_configured','Stripe Checkout is not configured for quotes.');const connected=actor.tenant_id==='owner'?null:this.service.stripeAccountForTenant(actor.tenant_id,mode);if(actor.tenant_id!=='owner'&&(!connected||connected.status!=='connected'||!connected.charges_enabled))throw new ApiError(409,'merchant_connection_required','Connect Stripe before accepting quotes.');this.service.prepareStripePayment(payment.id,mode,actor.tenant_id,connected?.account_id||null);const lineItems=accepted.items.filter(item=>item.net_total>0).map(item=>({name:`${item.product_name} × ${item.quantity}`,amount:item.net_total}));const session=await createStripeCheckout(secret,{amount:payment.amount,currency:'usd',productName:payment.product_name,lineItems,paymentId:payment.id,tenantId:payment.tenant_id,successUrl:`${this.env.AGORA_PUBLIC_ORIGIN}/checkout/complete?payment_id=${encodeURIComponent(payment.id)}&session_id={CHECKOUT_SESSION_ID}`,cancelUrl:`${this.env.AGORA_PUBLIC_ORIGIN}/checkout/cancel?payment_id=${encodeURIComponent(payment.id)}`,idempotencyKey:`agora-checkout-${payment.id}`,...(connected?{stripeAccountId:connected.account_id}:{})});this.service.saveStripeSession(payment.id,session,mode,actor.tenant_id,connected?.account_id||null);publicPay=publicPayment({...payment,provider:'stripe',provider_mode:mode},this.env.AGORA_PUBLIC_ORIGIN);}
+          const {checkout_token:_privateToken,...safePayment}=payment;return json({...accepted,payment:publicPay||safePayment},200,{'X-Request-Id':requestId});
+        }
+        throw new ApiError(405,'method_not_allowed','Method not allowed for this resource.');
+      }
+      const productVersion=path.match(/^\/api\/v1\/products\/([^/]+)\/versions$/);if(productVersion&&method==='GET'){const actor=this.service.authenticate(request);return json(this.service.productVersions(actor,decodeURIComponent(productVersion[1])),200,{'X-Request-Id':requestId});}
+      const productResource=path.match(/^\/api\/v1\/products\/([^/]+)$/);if(productResource&&method==='PATCH'){const actor=this.service.authenticate(request);const body=await bodyOf(request);const env=this.service.stripeRuntimeEnvironment();const provider=env.AGORA_PAYMENT_PROVIDER||'sandbox';const mode=provider==='stripe'?env.AGORA_STRIPE_MODE:'sandbox';if(mode!=='sandbox'&&mode!=='test'&&mode!=='live')throw new ApiError(503,'provider_not_configured','Set AGORA_STRIPE_MODE to test or live.');requireProviderMode(actor,mode);return json(this.service.mutate(actor,path,request.headers.get('idempotency-key'),body,()=>this.service.updateProduct(actor,decodeURIComponent(productResource[1]),body)),200,{'X-Request-Id':requestId});}
       if (path === '/api/v1/products' || path === '/api/v1/payments' || path === '/api/v1/events') {
         const body = method === 'POST' ? await bodyOf(request) : undefined;
         const actor = this.service.authenticate(request);

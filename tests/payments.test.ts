@@ -128,6 +128,7 @@ await test('Stripe webhook completion is mode-bound and replay-safe; sandbox can
   const raw=JSON.stringify(event);const timestamp=Math.floor(Date.now()/1000);const sig=createHmac('sha256',env.STRIPE_TEST_WEBHOOK_SECRET).update(`${timestamp}.${raw}`).digest('hex');const header=`t=${timestamp},v1=${sig}`;
   assert.deepEqual(s.handleStripeWebhook(raw,header),{received:true,duplicate:false,status:'succeeded'});
   assert.deepEqual(s.handleStripeWebhook(raw,header),{received:true,duplicate:true});
+  const linkedOrder=d.one<{id:string;status:string}>('SELECT id,status FROM orders WHERE payment_id=?',payment.id);assert.ok(linkedOrder);assert.equal(linkedOrder.status,'paid');assert.equal(d.one<{status:string}>('SELECT status FROM fulfillments WHERE order_id=?',linkedOrder.id)?.status,'ready');
   assert.equal(d.all('SELECT * FROM journal WHERE reference_id=?',payment.id).length,2);
   const refund=write('stripe-refund','stripe-refund-1',{payment_id:payment.id,amount:500,reason:'Test refund'},()=>s.createRefund(s.owner,{payment_id:payment.id,amount:500,reason:'Test refund'})) as unknown as {id:string;status:string;provider:string};
   assert.equal(refund.status,'pending');assert.equal(refund.provider,'stripe');assert.equal(d.one<{refunded:number}>('SELECT refunded FROM payments WHERE id=?',payment.id)?.refunded,0);
