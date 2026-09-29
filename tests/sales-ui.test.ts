@@ -35,8 +35,76 @@ const { QuoteReview } = await import("../components/quote-review")
 const { default: CheckoutReturn } =
   await import("../components/checkout-return")
 const { ProductEditor } = await import("../components/product-editor")
+const { QuoteDetails } = await import("../components/quote-details")
 
 const token = "a".repeat(43)
+await test("quote details reopen the original link and only allow editing open quotes", async () => {
+  const openQuote = {
+    id: "quo_open_ui",
+    version: 2,
+    status: "open",
+    customer_name: "Austin Hedges",
+    customer_email: "info@belweave.com",
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+    subtotal_amount: 49999,
+    discount_amount: 2500,
+    total_amount: 47499,
+    currency: "usd",
+    quote_url: `https://agora.example/quote#${token}`,
+    items: [
+      {
+        product_id: "prod_vr",
+        product_name: "Meta VR Glasses",
+        quantity: 1,
+        unit_amount: 49999,
+        line_total: 49999,
+      },
+    ],
+  }
+  let copied = ""
+  let edited = 0
+  render(
+    React.createElement(QuoteDetails, {
+      quote: openQuote,
+      onCopy: (url: string) => (copied = url),
+      onEdit: () => edited++,
+    })
+  )
+  assert.ok(screen.getByText(/Meta VR Glasses/))
+  assert.equal(
+    (
+      screen.getByRole("link", {
+        name: "Open original quote",
+      }) as HTMLAnchorElement
+    ).href,
+    openQuote.quote_url
+  )
+  fireEvent.click(
+    screen.getByRole("button", { name: "Copy original quote link" })
+  )
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Edit open quote" })
+  )
+  assert.equal(copied, openQuote.quote_url)
+  assert.equal(edited, 1)
+  cleanup()
+
+  render(
+    React.createElement(QuoteDetails, {
+      quote: { ...openQuote, status: "accepted" },
+      onCopy: () => {},
+      onEdit: () => edited++,
+    })
+  )
+  assert.equal(screen.queryByRole("button", { name: "Edit open quote" }), null)
+  assert.match(
+    (await screen.findByText(/read only/i)).textContent || "",
+    /read only/i
+  )
+  assert.equal(edited, 1)
+  cleanup()
+})
+
 const quote = {
   id: "quo_ui_test",
   merchant: "Agora Shop",

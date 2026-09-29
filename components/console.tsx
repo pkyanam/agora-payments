@@ -18,6 +18,7 @@ import {
   Settings05Icon,
 } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
+import { QuoteDetails } from "@/components/quote-details"
 import {
   Dialog,
   DialogContent,
@@ -144,6 +145,7 @@ const views = [
 type View = (typeof views)[number]
 type SalesQuote = {
   id: string
+  version?: number
   status: string
   customer_name?: string
   customer_email?: string | null
@@ -153,6 +155,7 @@ type SalesQuote = {
   total_amount: number
   currency: string
   items: Array<{
+    product_id?: string
     product_name: string
     quantity: number
     unit_amount: number
@@ -332,6 +335,8 @@ export default function Console() {
   const [salesBusy, setSalesBusy] = useState(false)
   const [salesError, setSalesError] = useState("")
   const [selectedQuote, setSelectedQuote] = useState<SalesQuote | null>(null)
+  const [quoteDetail, setQuoteDetail] = useState<SalesQuote | null>(null)
+  const [editingQuote, setEditingQuote] = useState<SalesQuote | null>(null)
   const [quoteLines, setQuoteLines] = useState<
     Array<{ product_id: string; quantity: number }>
   >([])
@@ -949,23 +954,60 @@ export default function Console() {
     setSalesBusy(true)
     setSalesError("")
     try {
-      const quote = await action<SalesQuote>("create_quote", {
-        customer: {
-          name: String(form.get("customer_name") || "").trim(),
-          email: String(form.get("customer_email") || "").trim() || undefined,
-        },
-        items: quoteLines,
-        expires_at: new Date(
-          Date.now() + Number(form.get("expires_in_seconds")) * 1000
-        ).toISOString(),
-        discount_amount: Math.round(
-          Number(form.get("discount_amount") || 0) * 100
-        ),
-      })
-      setSelectedQuote(quote)
+      const customer = {
+        name: String(form.get("customer_name") || "").trim(),
+        email: String(form.get("customer_email") || "").trim() || undefined,
+      }
+      const expiryChoice = String(form.get("expires_in_seconds") || "604800")
+      const expiresAt =
+        editingQuote && expiryChoice === "keep"
+          ? editingQuote.expires_at
+          : new Date(Date.now() + Number(expiryChoice) * 1000).toISOString()
+      const quote = editingQuote
+        ? await action<SalesQuote>("update_quote", {
+            quote_id: editingQuote.id,
+            expected_version: editingQuote.version,
+            customer,
+            ...(quoteLines.length !== editingQuote.items.length ||
+            quoteLines.some(
+              (line, index) =>
+                line.product_id !== editingQuote.items[index]?.product_id ||
+                line.quantity !== editingQuote.items[index]?.quantity
+            )
+              ? { items: quoteLines }
+              : {}),
+            ...(Math.round(
+              Number(form.get("discount_amount") || 0) * 100
+            ) !== editingQuote.discount_amount
+              ? {
+                  discount_amount: Math.round(
+                    Number(form.get("discount_amount") || 0) * 100
+                  ),
+                }
+              : {}),
+            ...(expiryChoice === "keep" ? {} : { expires_at: expiresAt }),
+          })
+        : await action<SalesQuote>("create_quote", {
+            customer,
+            items: quoteLines,
+            expires_at: expiresAt,
+            discount_amount: Math.round(
+              Number(form.get("discount_amount") || 0) * 100
+            ),
+          })
+      setSelectedQuote(
+        editingQuote
+          ? {
+              ...quote,
+              quote_url: editingQuote.quote_url,
+              quote_link_available: editingQuote.quote_link_available,
+            }
+          : quote
+      )
+      setEditingQuote(null)
       setDialog(null)
       setQuoteLines([])
-      toast.success("Quote created")
+      toast.success(editingQuote ? "Quote updated" : "Quote created")
     } catch (reason) {
       setSalesError(
         reason instanceof Error ? reason.message : "Quote could not be created."
@@ -2754,6 +2796,14 @@ export default function Console() {
                                 )}
                                 <div className="product-actions">
                                   <Badge variant="secondary">{q.status}</Badge>
+                                  <Button
+                                    type="button"
+                                    variant="secondary"
+                                    aria-label={`View quote for ${q.customer_name || "customer"}`}
+                                    onClick={() => setQuoteDetail(q)}
+                                  >
+                                    View quote
+                                  </Button>
                                 </div>
                               </article>
                             ))}
@@ -3607,6 +3657,7 @@ export default function Console() {
                   name="customer_name"
                   required
                   maxLength={120}
+                  defaultValue={editingQuote?.customer_name || ""}
                 />
               </div>
               <div className="field">
@@ -3618,6 +3669,7 @@ export default function Console() {
                   name="customer_email"
                   type="email"
                   maxLength={254}
+                  defaultValue={editingQuote?.customer_email || ""}
                 />
               </div>
               {quoteLines.map((line, index) => (
@@ -3638,7 +3690,9 @@ export default function Console() {
                       }
                     >
                       {data?.products
-                        .filter((p) => !p.archived_at)
+                        .filter(
+                          (p) => !p.archived_at || p.id === line.product_id
+                        )
                         .map((p) => (
                           <option value={p.id} key={p.id}>
                             {p.name} · {money(p.amount)}
@@ -3708,7 +3762,11 @@ export default function Console() {
                   type="number"
                   min="0"
                   step="0.01"
-                  defaultValue="0"
+                  defaultValue={
+                    editingQuote
+                      ? String(editingQuote.discount_amount / 100)
+                      : "0"
+                  }
                 />
               </div>
               <div className="field">
@@ -3716,8 +3774,11 @@ export default function Console() {
                 <select
                   id="quote-expiry"
                   name="expires_in_seconds"
-                  defaultValue="604800"
+                  defaultValue={editingQuote ? "keep" : "604800"}
                 >
+                  {editingQuote && (
+                    <option value="keep">Keep current expiry</option>
+                  )}
                   <option value="3600">In 1 hour</option>
                   <option value="86400">In 1 day</option>
                   <option value="604800">In 7 days</option>
@@ -3725,8 +3786,8 @@ export default function Console() {
                 </select>
               </div>
               <p className="form-note">
-                Prices and product names are snapshotted when created. The quote
-                can’t change if the catalog changes later.
+                Prices and product names are snapshotted on the quote. Editing
+                creates a new version while accepted quote history stays fixed.
               </p>
               {salesError && (
                 <p className="form-note" role="alert">
@@ -3737,8 +3798,28 @@ export default function Console() {
                 disabled={salesBusy || quoteLines.length === 0}
                 type="submit"
               >
-                {salesBusy ? "Creating…" : "Create quote"}
+                {salesBusy
+                  ? editingQuote
+                    ? "Saving…"
+                    : "Creating…"
+                  : editingQuote
+                    ? "Save quote"
+                    : "Create quote"}
               </Button>
+              {editingQuote && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => {
+                    setEditingQuote(null)
+                    setQuoteLines([])
+                    setSalesError("")
+                    setDialog(null)
+                  }}
+                >
+                  Cancel editing
+                </Button>
+              )}
             </form>
           )}
           {dialog === "product" && (
@@ -4037,6 +4118,39 @@ export default function Console() {
                   : "Reject registration"}
             </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={quoteDetail !== null}
+        onOpenChange={(open) => {
+          if (!open) setQuoteDetail(null)
+        }}
+      >
+        <DialogContent className="agora-dialog sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Quote details</DialogTitle>
+            <DialogDescription>
+              {quoteDetail?.id} · {quoteDetail?.customer_name}
+            </DialogDescription>
+          </DialogHeader>
+          {quoteDetail && (
+            <QuoteDetails
+              quote={quoteDetail}
+              onCopy={(url) => void copy(url)}
+              onEdit={() => {
+                setEditingQuote(quoteDetail)
+                setQuoteLines(
+                  quoteDetail.items.map((item) => ({
+                    product_id: item.product_id || "",
+                    quantity: item.quantity,
+                  }))
+                )
+                setSalesError("")
+                setQuoteDetail(null)
+                setDialog("quote")
+              }}
+            />
+          )}
         </DialogContent>
       </Dialog>
       <Sheet
